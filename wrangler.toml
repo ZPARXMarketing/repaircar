@@ -8,6 +8,10 @@ keep_vars = true
 directory = "./public"
 binding = "ASSETS"
 
+# Cloud sync storage (free Workers KV). Cloudflare creates it automatically on deploy.
+[[kv_namespaces]]
+binding = "STORE"
+
 [vars]
 # Main reasoning model (any OpenRouter model id)
 MODEL = "deepseek/deepseek-v4.1-flash"

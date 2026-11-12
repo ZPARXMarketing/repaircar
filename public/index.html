@@ -9,10 +9,13 @@
 <body>
   <header>
     <h1>🔧 Car Repair Helper</h1>
-    <button id="newBtn" class="ghost">New problem</button>
+    <button id="newBtn" class="ghost">+ New repair</button>
   </header>
 
   <main>
+    <!-- 📚 Library of repairs -->
+    <section id="library" class="hidden"></section>
+
     <!-- Saved ⭐ photos -->
     <section id="saved" class="hidden"></section>
 
@@ -30,6 +33,9 @@
       <textarea id="symptoms" rows="4" placeholder="e.g. Battery light flickers, car is slow to start in the morning, headlights dim at idle. Started last week."></textarea>
       <button id="diagnoseBtn" class="primary">Find likely problems</button>
     </section>
+
+    <!-- Current repair: notes, save to library, mark fixed -->
+    <section id="project" class="hidden"></section>
 
     <!-- Step 2: diagnosis -->
     <section id="diagnosis" class="hidden"></section>

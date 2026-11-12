@@ -1,15 +1,100 @@
 // Car Repair Helper - frontend
 const $ = (s) => document.querySelector(s);
 const state = JSON.parse(localStorage.getItem("repairState") || "{}");
-// state: { car, symptoms, history, diagnosis, problem, videos, breakdowns: {videoId: {video, data, problem}}, active, saved: [] }
-// Photos live in IndexedDB (see photo storage below).
+// state: { car, symptoms, history, diagnosis, problem, videos, breakdowns: {videoId: {video, data, problem}}, active, notes,
+//          currentId (library id of the current repair), library: [...], saved: [], updatedAt }
+// Photos live in IndexedDB (see photo storage below) and, with sync on, in the cloud.
+const SHARE = new URLSearchParams(location.search).get("share"); // read-only share link mode
+let SYNC = false;
+const PROJECT_FIELDS = ["car", "symptoms", "history", "diagnosis", "problem", "videos", "breakdowns", "active", "notes"];
+
 const save = () => {
+  if (SHARE) return;
+  state.updatedAt = Date.now();
+  const item = state.currentId && state.library?.find((p) => p.id === state.currentId);
+  if (item) { // keep the library copy of the current repair up to date
+    item.snapshot = snapshot();
+    item.title = projectTitle();
+    item.notes = state.notes || "";
+    item.updated = Date.now();
+  }
   try {
     localStorage.setItem("repairState", JSON.stringify(state));
   } catch {
     toast("Storage full");
   }
+  pushSoon();
 };
+
+const snapshot = () => JSON.parse(JSON.stringify(Object.fromEntries(PROJECT_FIELDS.map((k) => [k, state[k]]))));
+const projectTitle = () =>
+  state.problem?.name || state.diagnosis?.problems?.[0]?.name || (state.symptoms || "Repair").slice(0, 60);
+
+/* ---------------- cloud sync ---------------- */
+async function req(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: { "content-type": "application/json", "x-app-password": localStorage.getItem("appPassword") || "" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), { status: res.status });
+  return data;
+}
+
+let pushTimer;
+function pushSoon() {
+  if (!SYNC) return;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(pushState, 1500);
+}
+async function pushState() {
+  try {
+    await req("PUT", "/api/sync", { state });
+    setSyncBadge("☁️ Synced");
+  } catch (e) {
+    setSyncBadge("⚠️ Not synced");
+  }
+}
+function setSyncBadge(t) {
+  const b = $("#syncBadge");
+  if (b) b.textContent = t;
+}
+
+// Photo uploads: retried on next load if they fail (e.g. no signal in the garage).
+const pending = new Set(JSON.parse(localStorage.getItem("pendingUploads") || "[]"));
+const savePending = () => localStorage.setItem("pendingUploads", JSON.stringify([...pending]));
+async function uploadPhoto(k) {
+  if (!SYNC || !photos[k]) return;
+  try {
+    await req("PUT", "/api/photo?k=" + encodeURIComponent(k), { data: photos[k] });
+    pending.delete(k);
+  } catch {
+    pending.add(k);
+  }
+  savePending();
+}
+
+// Download photos this device doesn't have yet (from sync, or from a share link).
+const fetching = new Set();
+async function fetchMissing(keys, rerender) {
+  const missing = keys.filter((k) => !photos[k] && !fetching.has(k));
+  if (!missing.length || !(SYNC || SHARE)) return;
+  missing.forEach((k) => fetching.add(k));
+  let got = 0;
+  await Promise.all(
+    missing.map(async (k) => {
+      try {
+        const url = SHARE ? `/api/shared/${SHARE}/photo?k=${encodeURIComponent(k)}` : "/api/photo?k=" + encodeURIComponent(k);
+        const { data } = await req("GET", url);
+        if (SHARE) photos[k] = data;
+        else await photoPut(k, data, false);
+        got++;
+      } catch {}
+    })
+  );
+  if (got) rerender();
+}
 
 const esc = (s = "") => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmtTime = (t) => { t = Math.max(0, Math.floor(t || 0)); const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60; return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(s).padStart(2, "0"); };
@@ -80,16 +165,21 @@ $("#diagnoseBtn").onclick = (e) => {
 };
 
 $("#newBtn").onclick = () => {
-  if (!confirm("Start a new problem? Clears the current videos and step photos. (Your car and ⭐ saved photos stay.)")) return;
-  const keep = { car: state.car, saved: state.saved };
-  for (const k of Object.keys(state)) delete state[k];
-  Object.assign(state, keep);
+  const inLib = !!state.currentId;
+  if (!confirm(inLib ? "Start a new repair? This one stays in your Library." : "Start a new repair? The current one isn't in your Library yet and will be cleared.")) return;
+  clearCurrent();
   save();
-  idb("readonly", (st) => st.getAllKeys()).then(async (keys = []) => {
-    for (const k of keys) if (String(k).startsWith("shot:")) await photoDel(k);
-    location.reload();
-  });
+  renderAll();
+  scrollTo({ top: 0, behavior: "smooth" });
 };
+
+function clearCurrent() {
+  const car = state.car;
+  for (const k of [...PROJECT_FIELDS, "currentId"]) delete state[k];
+  state.car = car;
+  state.breakdowns = {};
+  loadIntake();
+}
 
 /* ---------------- diagnosis ---------------- */
 function renderDiagnosis() {
@@ -217,8 +307,16 @@ async function idb(mode, fn) {
     tx.onerror = () => rej(tx.error);
   });
 }
-const photoPut = (k, v) => { photos[k] = v; return idb("readwrite", (st) => st.put(v, k)); };
-const photoDel = (k) => { delete photos[k]; return idb("readwrite", (st) => st.delete(k)); };
+async function photoPut(k, v, upload = true) {
+  photos[k] = v;
+  await idb("readwrite", (st) => st.put(v, k));
+  if (upload) uploadPhoto(k);
+}
+async function photoDel(k) {
+  delete photos[k];
+  await idb("readwrite", (st) => st.delete(k));
+  if (SYNC) req("DELETE", "/api/photo?k=" + encodeURIComponent(k)).catch(() => {});
+}
 async function loadPhotos() {
   const keys = (await idb("readonly", (st) => st.getAllKeys())) || [];
   const vals = (await idb("readonly", (st) => st.getAll())) || [];
@@ -307,6 +405,11 @@ function renderBreakdown() {
   if ($("#captureAll")) $("#captureAll").onclick = (e) => captureAll(e.currentTarget);
   if ($("#snapNow")) $("#snapNow").onclick = snapNow;
   makePlayer(v.id);
+  // photos made on another device: download them, then just swap the pictures in (keeps the player running)
+  fetchMissing((b.steps || []).map((_, i) => shotKey(v.id, i)), () => {
+    if (state.active !== v.id) return;
+    (b.steps || []).forEach((s, i) => { const n = $(`#step-${i} .shot`); if (n) n.innerHTML = shotHtml(v.id, s, i); });
+  });
 }
 
 async function removeVideo(id) {
@@ -419,6 +522,168 @@ function renderSaved() {
         ${x.note ? `<div class="note">📝 ${esc(x.note)}</div>` : ""}
       </div>`).join("")}</div>`;
   el.querySelectorAll(".saved-item").forEach((n) => (n.onclick = () => openSaved(+n.dataset.k)));
+  fetchMissing(items.filter((x) => x.hasImg).map((x) => "saved:" + x.id), renderSaved);
+}
+
+/* ---------------- current repair bar + library ---------------- */
+function renderProject() {
+  const el = $("#project");
+  if (!state.diagnosis) return el.classList.add("hidden");
+  const item = state.library?.find((p) => p.id === state.currentId);
+  el.className = "card project";
+  el.innerHTML = `
+    <div class="row" style="justify-content:space-between">
+      <div><span class="muted">Current repair</span><h2 style="margin:2px 0">${esc(projectTitle())}</h2>
+        ${item ? `<span class="badge ${item.status}">${item.status === "fixed" ? "✅ Fixed" : "🔧 In progress"}</span> <span class="muted">· saved in Library</span>` : `<span class="muted">Not in your Library yet</span>`}
+      </div>
+      <div class="row">
+        ${item ? "" : `<button class="primary" id="addLib" style="margin:0">📚 Save to Library</button>`}
+        ${item?.status === "fixed" ? `<button id="markOpen">Reopen</button>` : `<button id="markFixed">✅ Mark fixed</button>`}
+      </div>
+    </div>
+    <textarea id="notes" rows="2" placeholder="Notes – what you did, parts used, part numbers, cost, what was a pain…">${esc(state.notes || "")}</textarea>`;
+  $("#notes").oninput = (e) => { state.notes = e.target.value; save(); };
+  if ($("#addLib")) $("#addLib").onclick = () => addToLibrary("in_progress");
+  if ($("#markFixed")) $("#markFixed").onclick = () => { if (!item) addToLibrary("fixed"); else setStatus(item, "fixed"); };
+  if ($("#markOpen")) $("#markOpen").onclick = () => setStatus(item, "in_progress");
+}
+
+function addToLibrary(status) {
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  (state.library ||= []).unshift({ id, title: projectTitle(), status, created: Date.now(), updated: Date.now(), fixedAt: status === "fixed" ? Date.now() : null, notes: state.notes || "", snapshot: snapshot() });
+  state.currentId = id;
+  save();
+  renderProject();
+  renderLibrary();
+  toast(status === "fixed" ? "✅ Marked fixed and saved to your Library" : "📚 Saved to your Library");
+}
+
+function setStatus(item, status) {
+  item.status = status;
+  item.fixedAt = status === "fixed" ? Date.now() : null;
+  save();
+  renderProject();
+  renderLibrary();
+  if (status === "fixed") toast("✅ Nice work! Saved as fixed");
+}
+
+const carName = (c = {}) => [c.year, c.make, c.model].filter(Boolean).join(" ");
+const fmtDate = (t) => (t ? new Date(t).toLocaleDateString() : "");
+
+function renderLibrary() {
+  const el = $("#library");
+  const items = state.library || [];
+  if (!items.length) return el.classList.add("hidden");
+  el.className = "card";
+  el.innerHTML = `
+    <div class="row" style="justify-content:space-between"><h2>📚 My Library (${items.length})</h2><span class="muted" id="syncBadge">${SYNC ? "☁️ Synced" : "This device only"}</span></div>
+    <div class="lib-grid">${items.map((p, k) => {
+      const vids = Object.keys(p.snapshot?.breakdowns || {});
+      return `
+      <div class="lib-item ${p.id === state.currentId ? "on" : ""}">
+        <div class="lib-thumb">${vids.length ? `<img src="${photos[shotKey(vids[0], 0)] || `https://i.ytimg.com/vi/${vids[0]}/mqdefault.jpg`}" alt="">` : "🔧"}</div>
+        <div class="lib-body">
+          <span class="badge ${p.status}">${p.status === "fixed" ? "✅ Fixed" : "🔧 In progress"}</span>
+          <b>${esc(p.title)}</b>
+          <div class="muted">${esc(carName(p.snapshot?.car))} · ${p.status === "fixed" ? "fixed " + fmtDate(p.fixedAt) : "started " + fmtDate(p.created)} · ${vids.length} video${vids.length === 1 ? "" : "s"}</div>
+          ${p.notes ? `<div class="note">📝 ${esc(p.notes.slice(0, 140))}${p.notes.length > 140 ? "…" : ""}</div>` : ""}
+          <div class="row" style="margin-top:6px">
+            <button data-open="${k}">${p.id === state.currentId ? "Open ✔" : "Open"}</button>
+            ${SYNC ? `<button data-share="${k}">🔗 Share link</button>` : ""}
+            <button data-del="${k}">🗑</button>
+          </div>
+        </div>
+      </div>`;
+    }).join("")}</div>`;
+  el.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => openProject(items[b.dataset.open])));
+  el.querySelectorAll("[data-share]").forEach((b) => (b.onclick = () => shareProject(items[b.dataset.share], b)));
+  el.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => {
+    const p = items[b.dataset.del];
+    if (!confirm(`Delete “${p.title}” from your Library?`)) return;
+    items.splice(b.dataset.del, 1);
+    if (state.currentId === p.id) delete state.currentId;
+    save();
+    renderLibrary();
+    renderProject();
+  }));
+}
+
+function openProject(p) {
+  if (p.id === state.currentId) return $("#project").scrollIntoView({ behavior: "smooth" });
+  if (!state.currentId && state.diagnosis && !confirm("Your current repair isn't in the Library and will be replaced. Continue?")) return;
+  clearCurrent();
+  Object.assign(state, JSON.parse(JSON.stringify(p.snapshot || {})));
+  state.breakdowns ||= {};
+  state.currentId = p.id;
+  save();
+  loadIntake();
+  renderAll();
+  $("#project").scrollIntoView({ behavior: "smooth" });
+}
+
+async function shareProject(p, btn) {
+  await busy(btn, "…", async () => {
+    await pushState(); // make sure the cloud copy is current
+    p.shareToken ||= (await req("POST", "/api/share", { projectId: p.id })).token;
+    save();
+    const link = `${location.origin}/?share=${p.shareToken}`;
+    try { await navigator.clipboard.writeText(link); toast("🔗 Link copied – anyone with it can view (not edit) this repair", 6000); }
+    catch { prompt("Copy this link:", link); }
+  });
+}
+
+/* ---------------- read-only share page ---------------- */
+async function renderShare() {
+  document.body.classList.add("readonly");
+  $("main").innerHTML = `<section class="card"><span class="spinner"></span>Loading…</section>`;
+  let data;
+  try { data = await req("GET", "/api/shared/" + SHARE); }
+  catch (e) { $("main").innerHTML = `<section class="card">${esc(e.message)}</section>`; return; }
+  const { project: p, saved } = data;
+  const snap = p.snapshot || {};
+  const bds = Object.values(snap.breakdowns || {});
+  const list = (title, arr) => (arr?.length ? `<div><b>${title}</b><ul>${arr.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : "");
+  const keys = [];
+  $("main").innerHTML = `
+    <section class="card">
+      <span class="badge ${p.status}">${p.status === "fixed" ? "✅ Fixed" : "🔧 In progress"}</span>
+      <h2>${esc(p.title)}</h2>
+      <div class="muted">${esc(carName(snap.car))} ${snap.car?.engine ? "· " + esc(snap.car.engine) : ""}</div>
+      ${snap.symptoms ? `<p><b>Symptoms:</b> ${esc(snap.symptoms)}</p>` : ""}
+      ${p.notes ? `<div class="note">📝 ${esc(p.notes)}</div>` : ""}
+    </section>
+    ${saved.length ? `<section class="card"><h2>⭐ Key photos</h2><div class="saved-grid">${saved.map((x) => { keys.push("saved:" + x.id); return `
+      <div class="saved-item" data-sk="saved:${x.id}"><div class="shot" data-key="saved:${x.id}">${shotHtml(x.vid, x.step, 0, photos["saved:" + x.id])}</div>
+      <b>${x.stepNo}. ${esc(x.step.title)}</b>${x.note ? `<div class="note">📝 ${esc(x.note)}</div>` : ""}</div>`; }).join("")}</div></section>` : ""}
+    ${bds.map(({ video: v, data: b }) => `
+      <section class="card">
+        <h2>${esc(v.title)}</h2>
+        <a href="https://www.youtube.com/watch?v=${v.id}" target="_blank" rel="noopener">Watch on YouTube</a>
+        <div class="cols">${list("🧰 Tools", b.tools)}${list("🔩 Parts", b.parts)}${list("📏 Specs", b.specs)}</div>
+        ${(b.steps || []).map((s, i) => { keys.push(shotKey(v.id, i)); return `
+          <div class="step">
+            <div class="shot" data-key="${shotKey(v.id, i)}" data-vid="${v.id}" data-i="${i}">${shotHtml(v.id, s, i)}</div>
+            <div class="step-text"><div><span class="ts">${fmtTime(s.t)}</span> &nbsp;<b>${i + 1}. ${esc(s.title)}</b></div><div>${esc(s.detail)}</div>
+              ${s.look_at ? `<div class="look">👀 ${esc(s.look_at)}</div>` : ""}${s.warning ? `<div class="gotcha">⚠️ ${esc(s.warning)}</div>` : ""}</div>
+          </div>`; }).join("")}
+      </section>`).join("")}`;
+  const stepOf = (vid, i) => snap.breakdowns[vid].data.steps[i];
+  const refresh = () => document.querySelectorAll(".shot[data-vid]").forEach((n) => (n.innerHTML = shotHtml(n.dataset.vid, stepOf(n.dataset.vid, +n.dataset.i), +n.dataset.i)));
+  document.querySelectorAll(".shot[data-vid]").forEach((n) => (n.onclick = () => {
+    const s = stepOf(n.dataset.vid, +n.dataset.i);
+    viewer({ vid: n.dataset.vid, s, img: photos[n.dataset.key], label: `${+n.dataset.i + 1}. ${s.title}` });
+  }));
+  document.querySelectorAll(".saved-item[data-sk]").forEach((n) => (n.onclick = () => {
+    const x = saved.find((y) => "saved:" + y.id === n.dataset.sk);
+    viewer({ vid: x.vid, s: x.step, img: photos[n.dataset.sk], label: `${x.stepNo}. ${x.step.title}`, note: x.note });
+  }));
+  fetchMissing(keys, () => {
+    refresh();
+    document.querySelectorAll(".saved-item[data-sk] .shot").forEach((n) => {
+      const x = saved.find((y) => "saved:" + y.id === n.dataset.key);
+      n.innerHTML = shotHtml(x.vid, x.step, 0, photos[n.dataset.key]);
+    });
+  });
 }
 
 function openSaved(k) {
@@ -586,7 +851,9 @@ async function snapNow() {
 
 /* ---------------- boot ---------------- */
 function renderAll() {
+  renderLibrary();
   renderSaved();
+  renderProject();
   renderDiagnosis();
   renderVideos();
   renderBreakdown();
@@ -601,17 +868,67 @@ if (state.breakdown && state.video) {
 const oldShots = state.shots || {};
 delete state.breakdown; delete state.video; delete state.shots;
 
-loadIntake();
-loadPhotos()
-  .then(async () => {
+async function boot() {
+  if (SHARE) return renderShare();
+  loadIntake();
+  try {
+    await loadPhotos();
     for (const [vid, m] of Object.entries(oldShots)) for (const [i, img] of Object.entries(m)) await photoPut(shotKey(vid, i), img);
-    save();
-  })
-  .catch(() => toast("Photo storage unavailable in this browser"))
-  .finally(renderAll);
-fetch("/api/config").then((r) => r.json()).then((c) => {
-  if (c.passwordRequired && !localStorage.getItem("appPassword")) {
+  } catch {
+    toast("Photo storage unavailable in this browser");
+  }
+  renderAll();
+
+  const cfg = await fetch("/api/config").then((r) => r.json()).catch(() => ({}));
+  if (cfg.passwordRequired && !localStorage.getItem("appPassword")) {
     const pw = prompt("Password:");
     if (pw) localStorage.setItem("appPassword", pw);
   }
-}).catch(() => {});
+  if (!cfg.sync) return;
+  try {
+    const remote = await req("GET", "/api/sync");
+    SYNC = true;
+    if (remote.state && (remote.state.updatedAt || 0) > (state.updatedAt || 0)) {
+      // the cloud copy is newer (made on another device) – use it
+      for (const k of Object.keys(state)) delete state[k];
+      Object.assign(state, remote.state);
+      state.breakdowns ||= {};
+      localStorage.setItem("repairState", JSON.stringify(state));
+      loadIntake();
+    } else if (state.updatedAt) {
+      await pushState();
+    }
+    // first time on this device: upload any photos made before sync existed
+    if (!localStorage.getItem("photosUploaded")) {
+      Object.keys(photos).forEach((k) => pending.add(k));
+      localStorage.setItem("photosUploaded", "1");
+    }
+    for (const k of pending) uploadPhoto(k);
+    renderAll();
+  } catch (e) {
+    if (e.status === 401) {
+      localStorage.removeItem("appPassword");
+      toast("Wrong password – reload the page to try again", 6000);
+    }
+  }
+}
+boot();
+
+// coming back to the tab (e.g. after using another device): pull newer cloud data
+document.addEventListener("visibilitychange", async () => {
+  if (document.hidden || !SYNC || SHARE) return;
+  try {
+    const remote = await req("GET", "/api/sync");
+    if (remote.state && (remote.state.updatedAt || 0) > (state.updatedAt || 0)) {
+      const activeEl = document.activeElement?.id;
+      if (activeEl === "notes" || activeEl === "symptoms") return; // don't yank the page while typing
+      for (const k of Object.keys(state)) delete state[k];
+      Object.assign(state, remote.state);
+      state.breakdowns ||= {};
+      localStorage.setItem("repairState", JSON.stringify(state));
+      loadIntake();
+      renderAll();
+      toast("☁️ Updated from your other device");
+    }
+  } catch {}
+});

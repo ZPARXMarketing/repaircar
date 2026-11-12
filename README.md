@@ -9,6 +9,14 @@ Tell it your car and the symptoms. It will:
 
 It runs on Cloudflare Workers.
 
+## Sync, Library & share links
+
+- **Sync:** your Library, saved photos and step photos sync across devices. You need `APP_PASSWORD` set. Storage is a free Workers KV namespace (`STORE`), which Cloudflare creates automatically on deploy.
+- **Library:** save a repair, add notes, and mark it ✅ fixed. Open it again on any device.
+- **🔗 Share link:** creates a view-only page of one repair (steps, photos, notes) that anyone with the link can open. No password is needed for that page.
+
+If sync shows "This device only", check that the worker has a **KV namespace binding** named `STORE`. You can find it under Settings → Bindings. If it's missing, create a KV namespace and bind it as `STORE`.
+
 ## Deploy (Cloudflare dashboard, no terminal)
 
 1. Go to Cloudflare → **Workers & Pages** → **Create** → **Import a repository** → choose this repo and deploy.

@@ -4,7 +4,9 @@
 //   POST /api/videos     -> ordered YouTube playlist for one problem
 //   POST /api/breakdown  -> timestamped repair steps for one video
 //   POST /api/ask        -> free-form follow-up question
-//   GET  /api/config     -> whether a password is required
+//   GET  /api/config     -> whether a password is required / sync is on
+//   GET|PUT /api/sync, GET|PUT|DELETE /api/photo, POST /api/share  -> cloud sync (KV)
+//   GET  /api/shared/<token>  -> public read-only project for share links
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
@@ -15,12 +17,25 @@ export default {
     if (!url.pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
 
     try {
+      const syncOn = !!(env.STORE && env.APP_PASSWORD);
       if (url.pathname === "/api/config") {
-        return json({ passwordRequired: !!env.APP_PASSWORD, model: env.MODEL, videoModel: env.VIDEO_MODEL });
+        return json({ passwordRequired: !!env.APP_PASSWORD, sync: syncOn, model: env.MODEL, videoModel: env.VIDEO_MODEL });
       }
+
+      // Public, read-only share links (no password): /api/shared/<token>[/photo?k=...]
+      const sh = url.pathname.match(/^\/api\/shared\/([\w-]{8,40})(\/photo)?$/);
+      if (sh) return syncOn ? sharedView(env, sh[1], sh[2] ? url.searchParams.get("k") : null) : json({ error: "Sharing is off" }, 404);
+
       if (env.APP_PASSWORD && request.headers.get("x-app-password") !== env.APP_PASSWORD) {
         return json({ error: "Wrong or missing password" }, 401);
       }
+
+      // Cloud sync (needs the STORE KV binding + APP_PASSWORD)
+      if (url.pathname.startsWith("/api/sync") || url.pathname.startsWith("/api/photo") || url.pathname === "/api/share") {
+        if (!syncOn) return json({ error: "Sync is off (needs STORE storage and APP_PASSWORD)" }, 400);
+        return storage(env, request, url);
+      }
+
       if (!env.OPENROUTER_API_KEY) return json({ error: "OPENROUTER_API_KEY is not set on the server" }, 500);
       if (request.method !== "POST") return json({ error: "POST only" }, 405);
 
@@ -42,6 +57,68 @@ export default {
     }
   },
 };
+
+/* ----------------------------- cloud storage (KV) -----------------------------
+   state           -> {state, updatedAt}  (everything except photos)
+   photo:<key>     -> image data URL
+   share:<token>   -> library project id                                         */
+
+const PHOTO_KEY = /^(shot:[\w-]{11}:\d+|saved:[\w]+)$/;
+
+async function storage(env, request, url) {
+  const m = request.method;
+  if (url.pathname === "/api/sync") {
+    if (m === "GET") return json((await env.STORE.get("state", "json")) || { state: null, updatedAt: 0 });
+    if (m === "PUT") {
+      const body = await request.json();
+      const doc = { state: body.state, updatedAt: Date.now() };
+      await env.STORE.put("state", JSON.stringify(doc));
+      return json({ updatedAt: doc.updatedAt });
+    }
+  }
+  if (url.pathname === "/api/photo") {
+    const k = url.searchParams.get("k") || "";
+    if (!PHOTO_KEY.test(k)) return json({ error: "Bad photo key" }, 400);
+    if (m === "GET") {
+      const v = await env.STORE.get("photo:" + k);
+      return v ? json({ data: v }) : json({ error: "Not found" }, 404);
+    }
+    if (m === "PUT") {
+      const { data } = await request.json();
+      if (!/^data:image\/(jpeg|png|webp);base64,/.test(data || "")) return json({ error: "Bad image" }, 400);
+      await env.STORE.put("photo:" + k, data);
+      return json({ ok: true });
+    }
+    if (m === "DELETE") {
+      await env.STORE.delete("photo:" + k);
+      return json({ ok: true });
+    }
+  }
+  if (url.pathname === "/api/share" && m === "POST") {
+    const { projectId } = await request.json();
+    const token = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+    await env.STORE.put("share:" + token, String(projectId));
+    return json({ token });
+  }
+  return json({ error: "Not found" }, 404);
+}
+
+// Read-only view of one library project, for share links.
+async function sharedView(env, token, photoKey) {
+  const projectId = await env.STORE.get("share:" + token);
+  const doc = projectId && (await env.STORE.get("state", "json"));
+  const project = doc?.state?.library?.find((p) => p.id === projectId);
+  if (!project) return json({ error: "This link no longer works" }, 404);
+  const vids = Object.keys(project.snapshot?.breakdowns || {});
+  const saved = (doc.state.saved || []).filter((x) => vids.includes(x.vid));
+  if (!photoKey) return json({ project, saved });
+  // only photos that belong to this project
+  const okShot = vids.some((v) => photoKey.startsWith(`shot:${v}:`));
+  const okSaved = saved.some((x) => photoKey === "saved:" + x.id);
+  if (!okShot && !okSaved) return json({ error: "Not found" }, 404);
+  const v = await env.STORE.get("photo:" + photoKey);
+  return v ? json({ data: v }) : json({ error: "Not found" }, 404);
+}
 
 /* ----------------------------- helpers ----------------------------- */
 
