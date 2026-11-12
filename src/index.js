@@ -170,15 +170,17 @@ async function llmOnce(env, messages, { model, jsonMode = true, maxTokens = 4000
 }
 
 // Gemini (via OpenRouter Responses API) can watch YouTube links directly.
-// OpenRouter is occasionally flaky with videos (502 "upstream request failed", or an empty 200),
-// so each attempt has a hard timeout and gets one quick retry.
+// OpenRouter is occasionally flaky with videos (502 "upstream request failed", or an empty 200).
+// Low reasoning effort: ~30s on a 25-min video instead of 50-70s, same step quality (tested 2026-11-12).
+// One attempt gets up to 110s; only a fast failure is retried, never a slow one.
 async function videoLlm(env, prompt, videoUrl) {
   let lastErr;
   for (let attempt = 1; attempt <= 2; attempt++) {
+    const t0 = Date.now();
     try {
       const res = await fetch("https://openrouter.ai/api/v1/responses", {
         method: "POST",
-        signal: AbortSignal.timeout(70000),
+        signal: AbortSignal.timeout(110000),
         headers: {
           authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
           "content-type": "application/json",
@@ -188,6 +190,7 @@ async function videoLlm(env, prompt, videoUrl) {
           model: env.VIDEO_MODEL,
           provider: { order: ["google-ai-studio"] },
           max_output_tokens: 8000,
+          reasoning: { effort: "low" },
           input: [
             {
               role: "user",
@@ -212,7 +215,8 @@ async function videoLlm(env, prompt, videoUrl) {
         .join("");
       return parseJson(text);
     } catch (e) {
-      lastErr = e.name === "TimeoutError" ? new Error("timed out after 70s") : e;
+      lastErr = e.name === "TimeoutError" ? new Error("timed out after 110s") : e;
+      if (Date.now() - t0 > 30000) break; // slow failure: don't make the user wait twice
     }
   }
   throw new Error(`OpenRouter video: ${lastErr.message}`);
