@@ -218,15 +218,22 @@ function renderBreakdown() {
   if (!b || !v) return el.classList.add("hidden");
   el.className = "card";
   const shots = (state.shots[v.id] ||= {});
-  const canCapture = !!navigator.mediaDevices?.getDisplayMedia;
+  const canCapture = !!navigator.mediaDevices?.getDisplayMedia && !/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+  const haveAll = (b.steps || []).every((_, i) => shots[i]);
   const list = (title, arr) => (arr?.length ? `<div><b>${title}</b><ul>${arr.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : "");
 
   el.innerHTML = `
     <h2>${esc(v.title)}</h2>
     <p>${esc(b.overview)} <span class="muted">(${esc(b.source)})</span></p>
+    ${canCapture && !haveAll ? `
+      <div class="banner">
+        <div><b>📸 Turn every step into a photo</b><br><span class="muted">Click, then pick <b>this tab</b> in the popup and hit Share. It jumps through the video and snaps each step (~1 min). Keep this tab open.</span></div>
+        <button class="primary" id="captureAll">Make step photos</button>
+      </div>` : ""}
+    ${!canCapture ? `<p class="muted">On a phone: tap any step photo to play that exact moment. For real screenshots, open this on a computer once – they'll be saved.</p>` : ""}
     <div class="player-wrap"><div class="player"><div id="yt"></div></div></div>
     <div class="row" style="margin:8px 0">
-      ${canCapture ? `<button id="captureAll">📸 Auto-capture a screenshot for every step</button><button id="snapNow">📸 Snap current frame</button>` : `<span class="muted">Tap a step to jump the video there. (Auto screenshots need a desktop browser.)</span>`}
+      ${canCapture ? `<button id="snapNow">📸 Snap current frame</button>${haveAll ? `<button id="captureAll">📸 Redo all photos</button>` : ""}` : ""}
       <button id="askVideo">Ask about this video</button>
     </div>
     <div id="askVideoBox"></div>
@@ -234,35 +241,71 @@ function renderBreakdown() {
     <h2>Steps</h2>
     ${(b.steps || []).map((s, i) => `
       <div class="step" id="step-${i}">
-        <div class="shot" data-seek="${s.t}" title="Jump to this moment">${shotHtml(shots[i], b.storyboard, s.t)}</div>
+        <div class="shot" data-i="${i}">${shotHtml(i)}</div>
         <div>
           <div><span class="ts" data-seek="${s.t}">▶ ${fmtTime(s.t)}</span> &nbsp;<b>${i + 1}. ${esc(s.title)}</b></div>
           <div>${esc(s.detail)}</div>
+          ${s.look_at ? `<div class="look">👀 ${esc(s.look_at)}</div>` : ""}
           ${s.warning ? `<div class="gotcha">⚠️ ${esc(s.warning)}</div>` : ""}
         </div>
       </div>`).join("")}`;
 
   el.querySelectorAll("[data-seek]").forEach((n) => (n.onclick = () => seek(+n.dataset.seek)));
+  el.querySelectorAll(".shot").forEach((n) => (n.onclick = () => openShot(+n.dataset.i)));
   $("#askVideo").onclick = () => askBox($("#askVideoBox"), state.problem?.name, `Watching video "${v.title}". Steps: ${(b.steps || []).map((s) => s.title).join("; ")}`);
-  if (canCapture) {
-    $("#captureAll").onclick = (e) => captureAll(e.currentTarget);
-    $("#snapNow").onclick = snapNow;
-  }
+  if ($("#captureAll")) $("#captureAll").onclick = (e) => captureAll(e.currentTarget);
+  if ($("#snapNow")) $("#snapNow").onclick = snapNow;
   makePlayer(v.id);
 }
 
-function shotHtml(dataUrl, sb, t) {
-  if (dataUrl) return `<img src="${dataUrl}" alt="" />`;
-  if (sb) {
-    // YouTube storyboard sprite frame
-    const idx = Math.min(sb.count - 1, Math.floor((t * 1000) / sb.interval));
-    const perSheet = sb.cols * sb.rows;
-    const sheet = Math.floor(idx / perSheet), pos = idx % perSheet;
-    const url = sb.urlTemplate.replace("{M}", "M" + sheet);
-    const col = pos % sb.cols, row = Math.floor(pos / sb.cols);
-    return `<div style="width:100%;height:100%;background:url('${url}') ${(-col * 100) / (sb.cols - 1 || 1)}% ${(-row * 100) / (sb.rows - 1 || 1)}% / ${sb.cols * 100}% ${sb.rows * 100}%"></div>`;
-  }
-  return `▶ ${fmtTime(t)}`;
+// Orange box over the part the step is about (position comes from the video model; approximate).
+function boxHtml(box) {
+  if (!Array.isArray(box) || box.length !== 4) return "";
+  let [y1, x1, y2, x2] = box.map((n) => Math.max(0, Math.min(1000, +n)) / 10);
+  const pad = 3; // a bit of margin so the part isn't hidden under the outline
+  y1 = Math.max(0, y1 - pad); x1 = Math.max(0, x1 - pad); y2 = Math.min(100, y2 + pad); x2 = Math.min(100, x2 + pad);
+  return `<div class="hl" style="top:${y1}%;left:${x1}%;height:${y2 - y1}%;width:${x2 - x1}%"></div>`;
+}
+
+function shotHtml(i) {
+  const v = state.video, s = state.breakdown.steps[i];
+  const img = state.shots[v.id]?.[i];
+  if (img) return `<img src="${img}" alt="" />${boxHtml(s.box)}`;
+  return `<img src="https://i.ytimg.com/vi/${v.id}/mqdefault.jpg" alt="" class="dim" /><span class="play">▶ ${fmtTime(s.t)}</span>`;
+}
+
+// Tap a step photo: show the screenshot big, or play that moment inline if there's no screenshot yet.
+function openShot(i) {
+  const v = state.video, s = state.breakdown.steps[i];
+  const img = state.shots[v.id]?.[i];
+  const box = $("#lightbox");
+  box.innerHTML = `
+    <div class="lb-inner">
+      <div class="lb-media">${
+        img
+          ? `<img src="${img}" alt="" />${boxHtml(s.box)}`
+          : `<iframe src="https://www.youtube.com/embed/${v.id}?start=${Math.max(0, s.t - 2)}&end=${s.t + 12}&autoplay=1&rel=0&playsinline=1" allow="autoplay; encrypted-media" allowfullscreen></iframe>`
+      }</div>
+      <div class="lb-text"><b>${i + 1}. ${esc(s.title)}</b> <span class="ts">${fmtTime(s.t)}</span><br>${esc(s.detail)}
+        ${s.look_at ? `<div class="look">👀 ${esc(s.look_at)}</div>` : ""}
+        ${s.warning ? `<div class="gotcha">⚠️ ${esc(s.warning)}</div>` : ""}
+      </div>
+      <div class="row">
+        <button data-nav="-1">◀ Prev</button><button data-nav="1">Next ▶</button>
+        ${img ? `<button data-clip>▶ Play this moment</button>` : ""}
+        <button data-close>Close</button>
+      </div>
+    </div>`;
+  box.classList.remove("hidden");
+  box.onclick = (e) => {
+    if (e.target === box || e.target.dataset.close !== undefined) { box.classList.add("hidden"); box.innerHTML = ""; }
+    else if (e.target.dataset.nav) {
+      const n = i + +e.target.dataset.nav;
+      if (n >= 0 && n < state.breakdown.steps.length) openShot(n);
+    } else if (e.target.dataset.clip !== undefined) {
+      box.querySelector(".lb-media").innerHTML = `<iframe src="https://www.youtube.com/embed/${v.id}?start=${Math.max(0, s.t - 2)}&end=${s.t + 12}&autoplay=1&rel=0&playsinline=1" allow="autoplay; encrypted-media" allowfullscreen></iframe>`;
+    }
+  };
 }
 
 function makePlayer(id) {
@@ -328,18 +371,23 @@ async function captureAll(btn) {
       btn.innerHTML = `<span class="spinner"></span>Step ${i + 1}/${steps.length}`;
       window.scrollTo({ top: 0 });
       $(".player-wrap").scrollIntoView({ block: "start" });
-      player.seekTo(steps[i].t + 1, true);
+      // start a moment early and let it play into the step, so the frame is sharp (not a seek blur)
+      player.seekTo(Math.max(0, steps[i].t - 1), true);
       player.playVideo();
       await waitPlaying();
-      await sleep(1200);
+      const end = Date.now() + 5000;
+      while (player.getCurrentTime() < steps[i].t && Date.now() < end) await sleep(80);
+      await sleep(200);
       shots[i] = grabPlayerFrame();
       player.pauseVideo();
       const n = document.querySelector(`#step-${i} .shot`);
-      if (n) n.innerHTML = `<img src="${shots[i]}" alt="" />`;
+      if (n) n.innerHTML = shotHtml(i);
     }
     player.unMute();
     save();
-    toast("Screenshots saved ✔");
+    capStream.getTracks().forEach((t) => t.stop());
+    renderBreakdown();
+    toast("Step photos saved ✔ – tap any photo to see it big");
   });
 }
 
@@ -361,7 +409,7 @@ async function snapNow() {
     steps.forEach((s, i) => { if (s.t <= t) idx = i; });
     state.shots[state.video.id][idx] = grabPlayerFrame();
     save();
-    document.querySelector(`#step-${idx} .shot`).innerHTML = `<img src="${state.shots[state.video.id][idx]}" alt="" />`;
+    document.querySelector(`#step-${idx} .shot`).innerHTML = shotHtml(idx);
     toast(`Saved to step ${idx + 1}`);
   } catch (e) {
     toast("Capture cancelled: " + e.message);

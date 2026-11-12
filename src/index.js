@@ -82,7 +82,7 @@ async function llm(env, messages, { model, jsonMode = true, maxTokens = 4000 } =
 }
 
 // Gemini (via OpenRouter Responses API) can watch YouTube links directly.
-async function videoLlm(env, prompt, videoUrl) {
+async function videoLlm(env, prompt, videoUrl, attempt = 1) {
   const res = await fetch("https://openrouter.ai/api/v1/responses", {
     method: "POST",
     headers: {
@@ -106,17 +106,22 @@ async function videoLlm(env, prompt, videoUrl) {
     }),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok || data.error) throw new Error(`OpenRouter video: ${data.error?.message || res.status}`);
-  const text =
-    data.output_text ||
-    (data.output || [])
-      .flatMap((o) => o.content || [])
-      .map((c) => c.text || "")
-      .join("");
+  if (!res.ok || data.error) {
+    if (attempt < 2) return videoLlm(env, prompt, videoUrl, attempt + 1);
+    throw new Error(`OpenRouter video: ${data.error?.message || res.status}`);
+  }
+  // Only read the final answer, not the model's "reasoning" items.
+  const text = (data.output || [])
+    .filter((o) => o.type === "message")
+    .flatMap((o) => o.content || [])
+    .filter((c) => c.type === "output_text")
+    .map((c) => c.text)
+    .join("");
   return parseJson(text);
 }
 
 function parseJson(text) {
+  text = text.replace(/```(?:json)?/g, "").trim();
   try {
     return JSON.parse(text);
   } catch {
@@ -318,10 +323,18 @@ const STEPS_SCHEMA = `Return ONLY JSON:
   "parts": ["parts / fluids needed"],
   "specs": ["torque specs, fluid capacities, gaps etc. mentioned"],
   "steps": [
-    {"t": seconds_into_video_as_integer, "title": "short step title", "detail": "what to do + what to look at", "warning": "optional gotcha or empty"}
+    {
+      "t": seconds_into_video_as_integer,
+      "title": "short step title",
+      "detail": "what to do",
+      "look_at": "exactly what is on screen at t: which bolt/clip/connector, its size, where it is relative to other parts",
+      "box": [ymin, xmin, ymax, xmax] of that bolt/part in the frame at t, each 0-1000, or null if not clearly visible,
+      "warning": "optional gotcha or empty"
+    }
   ]
 }
-Make 6-20 steps in order. Timestamps must point to where that step is SHOWN in the video.`;
+Think like someone pausing the video to take a screenshot of each important moment: every bolt location, connector, clip, part orientation, and before/after view.
+Make 8-25 steps in order. Pick t where the key part is clearly in frame (hands not covering it), not when the narrator just talks.`;
 
 async function breakdown(env, { videoId, car, problem, length = "", deep = true }) {
   if (!/^[\w-]{11}$/.test(videoId || "")) throw new Error("Bad video id");
@@ -345,28 +358,27 @@ async function breakdown(env, { videoId, car, problem, length = "", deep = true 
     }
   }
 
-  // 2) Fallback: transcript (if YouTube lets us) + description/chapters.
+  // 2) Fallback: description/chapters only.
   if (!result) {
-    const transcript = await getTranscript(videoId).catch(() => "");
     result = await llm(
       env,
       [
-        { role: "system", content: `You are a master mechanic turning a repair video into a step-by-step guide.\n${STEPS_SCHEMA}\nIf there is no transcript, estimate from chapters/description and the video length, and say so in overview.` },
+        { role: "system", content: `You are a master mechanic turning a repair video into a step-by-step guide.\n${STEPS_SCHEMA}\nYou cannot see the video: estimate from chapters/description and the video length, set every box to null, and say timestamps are estimates in overview.` },
         {
           role: "user",
-          content: `${context}\nVideo title: ${meta.title}\nLength: ${length || meta.lengthSeconds || "?"}\nChapters:\n${meta.chapters.join("\n") || "(none)"}\nDescription:\n${meta.description}\n\nTranscript (seconds: text):\n${transcript.slice(0, 60000) || "(not available)"}`,
+          content: `${context}\nVideo title: ${meta.title}\nLength: ${length || meta.lengthSeconds || "?"}\nChapters:\n${meta.chapters.join("\n") || "(none)"}\nDescription:\n${meta.description}`,
         },
       ],
       { maxTokens: 6000 }
     );
-    source = source || (transcript ? "used transcript" : "used description only (estimates)");
+    source = source || "used description only (estimates)";
   }
 
-  return { ...result, source, meta, storyboard: meta.storyboard };
+  return { ...result, source, meta };
 }
 
 async function videoMeta(videoId) {
-  const meta = { title: "", description: "", chapters: [], lengthSeconds: 0, storyboard: null };
+  const meta = { title: "", description: "", chapters: [], lengthSeconds: 0 };
   try {
     const html = await fetch(`https://www.youtube.com/watch?v=${videoId}&hl=en`, {
       headers: { "user-agent": UA, "accept-language": "en-US,en;q=0.9" },
@@ -384,45 +396,6 @@ async function videoMeta(videoId) {
     meta.description = meta.description.slice(0, 5000);
     meta.chapters = [...new Set(meta.chapters)].slice(0, 60);
     meta.lengthSeconds = Number((html.match(/"lengthSeconds":"(\d+)"/) || [])[1] || 0);
-    const sb = html.match(/"playerStoryboardSpecRenderer":\{"spec":"([^"]+)"/);
-    if (sb) meta.storyboard = parseStoryboard(JSON.parse(`"${sb[1]}"`));
   } catch {}
   return meta;
-}
-
-// Storyboard = YouTube's sprite sheets of preview frames. Only available when YouTube
-// doesn't bot-block the request; the frontend falls back to live capture otherwise.
-function parseStoryboard(spec) {
-  const parts = spec.split("|");
-  const base = parts[0];
-  const levels = parts.slice(1).map((p, i) => {
-    const [w, h, count, cols, rows, interval, name, sigh] = p.split("#");
-    return { level: i, w: +w, h: +h, count: +count, cols: +cols, rows: +rows, interval: +interval, name, sigh };
-  });
-  const best = levels.filter((l) => l.interval > 0).pop();
-  if (!best) return null;
-  return {
-    ...best,
-    urlTemplate: base.replace("$L", best.level).replace("$N", best.name.replace("$M", "{M}")) + `&sigh=${best.sigh}`,
-  };
-}
-
-async function getTranscript(videoId) {
-  const res = await fetch("https://www.youtube.com/youtubei/v1/player?prettyPrint=false", {
-    method: "POST",
-    headers: { "content-type": "application/json", "user-agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip" },
-    body: JSON.stringify({
-      context: { client: { clientName: "ANDROID", clientVersion: "20.10.38", androidSdkVersion: 30, hl: "en", gl: "US" } },
-      videoId,
-    }),
-  });
-  const data = await res.json();
-  const tracks = data.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
-  const track = tracks.find((t) => t.languageCode?.startsWith("en")) || tracks[0];
-  if (!track) return "";
-  const cap = await fetch(track.baseUrl.replace(/&fmt=[^&]*/, "") + "&fmt=json3", { headers: { "user-agent": UA } }).then((r) => r.json());
-  return (cap.events || [])
-    .filter((e) => e.segs)
-    .map((e) => `${Math.floor(e.tStartMs / 1000)}: ${e.segs.map((s) => s.utf8).join("").replace(/\n/g, " ")}`)
-    .join("\n");
 }
