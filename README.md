@@ -2,7 +2,7 @@
 
 **Tell it your car and what's wrong. It tells you the likely problems, finds the YouTube videos to fix it in the right order, and turns each video into step-by-step photos.**
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/ZPARXMarketing/repair)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/ZPARXMarketing/repaircar)
 
 ---
 
