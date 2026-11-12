@@ -58,7 +58,17 @@ function carString(car = {}) {
     .join(" ");
 }
 
-async function llm(env, messages, { model, jsonMode = true, maxTokens = 4000 } = {}) {
+// Calls the main model; if it errors or returns broken JSON, retries once on FALLBACK_MODEL.
+async function llm(env, messages, opts = {}) {
+  try {
+    return await llmOnce(env, messages, opts);
+  } catch (e) {
+    if (opts.model || !env.FALLBACK_MODEL) throw e;
+    return llmOnce(env, messages, { ...opts, model: env.FALLBACK_MODEL });
+  }
+}
+
+async function llmOnce(env, messages, { model, jsonMode = true, maxTokens = 4000 } = {}) {
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
