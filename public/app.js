@@ -241,7 +241,8 @@ async function getBreakdown(video, btn) {
     save();
     renderVideos();
     renderBreakdown();
-    $("#breakdown").scrollIntoView({ behavior: "smooth" });
+    ($(".banner") || $("#breakdown")).scrollIntoView({ behavior: "smooth", block: "center" });
+    if ($(".banner")) toast("Steps ready ✔ – now click “Make step photos” to get the screenshots", 6000);
   });
 }
 
@@ -266,7 +267,7 @@ function renderBreakdown() {
     <p>${esc(b.overview)} <span class="muted">(${esc(b.source)})</span></p>
     ${canCapture && !haveAll ? `
       <div class="banner">
-        <div><b>📸 Turn every step into a photo</b><br><span class="muted">Click, then pick <b>this tab</b> in the popup and hit Share. It jumps through the video and snaps each step (~1 min). Keep this tab open.</span></div>
+        <div><b>📸 This video has no step photos yet</b><br><span class="muted">Click, then pick <b>this tab</b> in the popup and hit Share. It jumps through the video and snaps each step (~1 min). Keep this tab open.</span></div>
         <button class="primary" id="captureAll">Make step photos</button>
       </div>` : ""}
     ${!canCapture ? `<p class="muted">On a phone: tap any step picture to play that exact moment. For real screenshots, open this on a computer once.</p>` : ""}
@@ -330,7 +331,8 @@ function boxHtml(box) {
 
 function shotHtml(vid, s, i, img = photos[shotKey(vid, i)]) {
   if (img) return `<img src="${img}" alt="" />${boxHtml(s.box)}`;
-  return `<img src="https://i.ytimg.com/vi/${vid}/hqdefault.jpg" alt="" class="dim" /><span class="play">▶ ${fmtTime(s.t)}</span>`;
+  const desktop = !/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+  return `<img src="https://i.ytimg.com/vi/${vid}/hqdefault.jpg" alt="" class="dim" /><span class="play">${desktop ? "📸 No photo yet · " : "▶ "}${fmtTime(s.t)}</span>`;
 }
 
 const clipHtml = (vid, t) =>
