@@ -1,0 +1,18 @@
+name = "car-repair-helper"
+main = "src/index.js"
+compatibility_date = "2025-10-01"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[vars]
+# Main reasoning model (any OpenRouter model id)
+MODEL = "anthropic/claude-sonnet-5.5"
+# Model that can watch YouTube videos directly (Gemini)
+VIDEO_MODEL = "google/gemini-3.8-flash"
+
+# Secrets (set in Cloudflare dashboard or `npx wrangler secret put NAME`):
+#   OPENROUTER_API_KEY  - required
+#   APP_PASSWORD        - recommended, locks the site so nobody else burns your credits
+#   YOUTUBE_API_KEY     - optional fallback if YouTube scraping gets blocked

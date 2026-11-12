@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Car Repair Helper</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <h1>🔧 Car Repair Helper</h1>
+    <button id="newBtn" class="ghost">New problem</button>
+  </header>
+
+  <main>
+    <!-- Step 1: car + symptoms -->
+    <section id="intake" class="card">
+      <h2>1. Your car</h2>
+      <div class="grid">
+        <input id="year" placeholder="Year (2012)" inputmode="numeric" />
+        <input id="make" placeholder="Make (Honda)" />
+        <input id="model" placeholder="Model (Civic)" />
+        <input id="engine" placeholder="Engine / trim (1.8L EX) – optional" />
+        <input id="mileage" placeholder="Mileage – optional" inputmode="numeric" />
+      </div>
+      <h2>2. What's it doing?</h2>
+      <textarea id="symptoms" rows="4" placeholder="e.g. Battery light flickers, car is slow to start in the morning, headlights dim at idle. Started last week."></textarea>
+      <button id="diagnoseBtn" class="primary">Find likely problems</button>
+    </section>
+
+    <!-- Step 2: diagnosis -->
+    <section id="diagnosis" class="hidden"></section>
+
+    <!-- Step 3: videos -->
+    <section id="videos" class="hidden"></section>
+
+    <!-- Step 4: breakdown of one video -->
+    <section id="breakdown" class="hidden"></section>
+  </main>
+
+  <div id="toast" class="hidden"></div>
+  <script src="https://www.youtube.com/iframe_api"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
