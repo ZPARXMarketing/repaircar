@@ -41,7 +41,7 @@ ol, ul { margin: 6px 0; padding-left: 22px; }
 .stage { color: var(--accent); font-weight: 600; font-size: 14px; }
 @media (max-width: 600px) { .video { grid-template-columns: 1fr; } }
 
-.player-wrap { position: sticky; top: 56px; z-index: 4; background: var(--bg); padding-bottom: 8px; }
+.player-wrap { padding-bottom: 8px; scroll-margin-top: 64px; }
 .player { position: relative; width: 100%; aspect-ratio: 16/9; background: #000; border-radius: 10px; overflow: hidden; }
 .player iframe, .player > div { position: absolute; inset: 0; width: 100%; height: 100%; }
 .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
