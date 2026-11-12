@@ -189,6 +189,7 @@ $("#diagnoseBtn").onclick = (e) => {
     Object.assign(state, { car, symptoms, history: [], problem: null });
     localStorage.setItem("lastCar", JSON.stringify(car));
     state.diagnosis = await api("/api/diagnose", { car, symptoms, history: [] });
+    ensureInLibrary();
     save();
     $("#intake").open = false;
     intakeMeta();
@@ -198,8 +199,8 @@ $("#diagnoseBtn").onclick = (e) => {
 };
 
 $("#newBtn").onclick = () => {
-  const inLib = !!state.currentId;
-  if (!confirm(inLib ? "Start a new repair? This one stays in your Library." : "Start a new repair? The current one isn't in your Library yet and will be cleared.")) return;
+  ensureInLibrary();
+  if (state.diagnosis && !confirm("Start a new repair? This one stays in your 📚 Library – open it from there any time.")) return;
   clearCurrent();
   save();
   renderAll();
@@ -581,28 +582,31 @@ function renderProject() {
   el.innerHTML = `
     <div class="project-head">
       <div><span class="muted">Current repair</span><h2>${esc(projectTitle())}</h2>
-        ${item ? `<span class="badge ${item.status}">${item.status === "fixed" ? "✅ Fixed" : "🔧 In progress"}</span> <span class="muted">· saved in Library</span>` : `<span class="muted">Not in your Library yet</span>`}
+        ${item ? `<span class="badge ${item.status}">${item.status === "fixed" ? "✅ Fixed" : "🔧 In progress"}</span> <span class="muted">· auto-saved in your Library</span>` : ""}
       </div>
       <div class="row">
-        ${item ? "" : `<button class="primary" id="addLib">📚 Save to Library</button>`}
         ${item?.status === "fixed" ? `<button id="markOpen">Reopen</button>` : `<button id="markFixed">✅ Mark fixed</button>`}
       </div>
     </div>
     <textarea id="notes" rows="2" placeholder="Notes – what you did, parts used, part numbers, cost, what was a pain…">${esc(state.notes || "")}</textarea>`;
   $("#notes").oninput = (e) => { state.notes = e.target.value; save(); };
-  if ($("#addLib")) $("#addLib").onclick = () => addToLibrary("in_progress");
   if ($("#markFixed")) $("#markFixed").onclick = () => { if (!item) addToLibrary("fixed"); else setStatus(item, "fixed"); };
   if ($("#markOpen")) $("#markOpen").onclick = () => setStatus(item, "in_progress");
 }
 
-function addToLibrary(status) {
+// Every repair lives in the Library from its first diagnosis, so nothing can be lost.
+function ensureInLibrary() {
+  if (state.diagnosis && !state.library?.some((p) => p.id === state.currentId)) addToLibrary("in_progress", true);
+}
+
+function addToLibrary(status, quiet = false) {
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   (state.library ||= []).unshift({ id, title: projectTitle(), status, created: Date.now(), updated: Date.now(), fixedAt: status === "fixed" ? Date.now() : null, notes: state.notes || "", snapshot: snapshot() });
   state.currentId = id;
   save();
   renderProject();
   renderLibrary();
-  toast(status === "fixed" ? "✅ Marked fixed and saved to your Library" : "📚 Saved to your Library");
+  if (!quiet) toast(status === "fixed" ? "✅ Marked fixed and saved to your Library" : "📚 Saved to your Library");
 }
 
 function setStatus(item, status) {
@@ -655,7 +659,7 @@ function renderLibrary() {
 
 function openProject(p) {
   if (p.id === state.currentId) return $("#project").scrollIntoView({ behavior: "smooth" });
-  if (!state.currentId && state.diagnosis && !confirm("Your current repair isn't in the Library and will be replaced. Continue?")) return;
+  ensureInLibrary();
   clearCurrent();
   Object.assign(state, JSON.parse(JSON.stringify(p.snapshot || {})));
   state.breakdowns ||= {};
@@ -934,6 +938,7 @@ async function snapNow() {
 
 /* ---------------- boot ---------------- */
 function renderAll() {
+  ensureInLibrary(); // catches a repair that was in progress before auto-save existed
   renderLibrary();
   renderSaved();
   renderProject();
