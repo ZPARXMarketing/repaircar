@@ -9,7 +9,7 @@ Tell it your car and the symptoms. It will:
 1. Rank the most likely problems with odds, how to confirm each one, and rough costs.
 2. Find YouTube videos for the fix and put them **in the order to watch them**.
 3. Turn any video into **timestamped steps** with tools, parts and specs. A Gemini model watches the video.
-4. **Take screenshots** for each step. This is desktop only: click "Auto-capture" and choose this tab when your browser asks.
+4. **Take screenshots** for each step. This is desktop only: click "Make step photos" and share this tab when your browser asks.
 
 It runs on Cloudflare Workers.
 
