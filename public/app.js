@@ -708,19 +708,25 @@ function openSaved(k) {
   );
 }
 
-function makePlayer(id) {
-  if (playerVid === id && document.querySelector("#yt")?.tagName === "IFRAME") return;
+// clean = no controls/overlays at all (used while taking step photos). Resolves when the player is ready.
+function makePlayer(id, { force = false, clean = false } = {}) {
+  if (!force && playerVid === id && document.querySelector("#yt")?.tagName === "IFRAME") return Promise.resolve();
+  if (force) $(".player").innerHTML = `<div id="yt"></div>`;
   playerReady = false;
   playerVid = id;
-  const create = () => {
-    player = new YT.Player("yt", {
-      videoId: id,
-      playerVars: { rel: 0, modestbranding: 1, playsinline: 1, iv_load_policy: 3 },
-      events: { onReady: () => (playerReady = true) },
-    });
-  };
-  if (window.YT?.Player) create();
-  else window.onYouTubeIframeAPIReady = create;
+  return new Promise((resolve) => {
+    const create = () => {
+      player = new YT.Player("yt", {
+        videoId: id,
+        playerVars: clean
+          ? { controls: 0, disablekb: 1, fs: 0, rel: 0, iv_load_policy: 3, playsinline: 1, mute: 1, cc_load_policy: 0 }
+          : { rel: 0, modestbranding: 1, playsinline: 1, iv_load_policy: 3 },
+        events: { onReady: () => { playerReady = true; resolve(); } },
+      });
+    };
+    if (window.YT?.Player) create();
+    else window.onYouTubeIframeAPIReady = create;
+  });
 }
 
 function seek(t) {
@@ -736,7 +742,7 @@ async function ensureCapture() {
   if (capStream?.active) return true;
   toast("Pick THIS tab in the share popup so I can grab frames from the video", 6000);
   capStream = await navigator.mediaDevices.getDisplayMedia({
-    video: { displaySurface: "browser", frameRate: 30 },
+    video: { displaySurface: "browser", frameRate: 30, width: { ideal: 3840 }, height: { ideal: 2160 } },
     audio: false,
     preferCurrentTab: true,
     selfBrowserSurface: "include",
@@ -754,7 +760,7 @@ function grabPlayerFrame() {
   const sx = capVideo.videoWidth / window.innerWidth;
   const sy = capVideo.videoHeight / window.innerHeight;
   const c = document.createElement("canvas");
-  c.width = Math.min(1280, Math.round(rect.width * sx));
+  c.width = Math.min(1920, Math.round(rect.width * sx));
   c.height = Math.round((c.width * 9) / 16);
   c.getContext("2d").drawImage(capVideo, rect.left * sx, rect.top * sy, rect.width * sx, rect.height * sy, 0, 0, c.width, c.height);
   return c;
@@ -777,17 +783,18 @@ function isBlank(c) {
 }
 
 // Jump to t, let it actually play, then grab a non-black frame. Returns dataURL or null.
+// The video keeps playing the whole time and we only jump around in it – pausing/resuming is what
+// makes YouTube flash its big play/pause icon in the middle.
 async function captureAt(t) {
   player.seekTo(Math.max(0, t - 1.5), true);
-  player.playVideo();
-  await waitPlaying();
+  if (player.getPlayerState() !== YT.PlayerState.PLAYING) { player.playVideo(); await waitPlaying(); }
   const end = Date.now() + 8000;
   while (player.getCurrentTime() < t && Date.now() < end) await sleep(80);
   for (let tries = 0; tries < 8; tries++) {
-    await sleep(tries ? 400 : 700); // give the tab-capture stream time to show the new frame
+    await sleep(tries ? 400 : 1100); // let any icon fade and the tab-capture stream catch up
     if (player.getPlayerState() !== YT.PlayerState.PLAYING) { player.playVideo(); await waitPlaying(); }
     const c = grabPlayerFrame();
-    if (!isBlank(c)) return c.toDataURL("image/jpeg", 0.85);
+    if (!isBlank(c)) return c.toDataURL("image/jpeg", 0.9);
   }
   return null;
 }
@@ -798,29 +805,46 @@ async function captureAll(btn) {
   if (!playerReady) return toast("Player still loading…");
   const { video: v, data: b } = active();
   await busy(btn, "Capturing…", async () => {
+   try {
     await ensureCapture();
     const steps = b.steps || [];
     let failed = 0;
+    // fill the screen with the video: bigger player = YouTube sends HD = sharper photos
+    const wrap = $(".player-wrap");
+    wrap.classList.add("capturing");
+    const label = document.createElement("div");
+    label.className = "cap-label";
+    label.textContent = "📸 Getting the video ready…";
+    wrap.appendChild(label);
+    // swap in a bare player (no controls, title or icons) just for the photos
+    await makePlayer(v.id, { force: true, clean: true });
     player.mute();
-    // cover the player so the mouse doesn't make YouTube show its title bar / controls in the photos
+    player.seekTo(Math.max(0, (steps[0]?.t || 0) - 1.5), true);
+    player.playVideo();
+    await waitPlaying(10000);
+    // cover the player so the mouse can't bring up any YouTube overlays
     const shield = document.createElement("div");
     shield.className = "shield";
     $(".player").appendChild(shield);
     for (let i = 0; i < steps.length; i++) {
-      btn.innerHTML = `<span class="spinner"></span>Step ${i + 1}/${steps.length}`;
-      $(".player-wrap").scrollIntoView({ block: "start" });
+      btn.innerHTML = label.textContent = `📸 Taking step photos… ${i + 1}/${steps.length}`;
       const img = await captureAt(steps[i].t);
       if (img) await photoPut(shotKey(v.id, i), img);
       else failed++;
       const n = document.querySelector(`#step-${i} .shot`);
       if (n) n.innerHTML = shotHtml(v.id, steps[i], i);
     }
-    player.pauseVideo();
-    player.unMute();
     shield.remove();
+    label.remove();
+    wrap.classList.remove("capturing");
     capStream.getTracks().forEach((t) => t.stop());
+    await makePlayer(v.id, { force: true }); // back to the normal player
     renderBreakdown();
     toast(failed ? `Photos saved ✔ – ${failed} step(s) stayed black, try “Redo all photos”` : "Step photos saved ✔ – tap any photo to see it big", 6000);
+   } finally {
+    document.querySelector(".player-wrap.capturing")?.classList.remove("capturing");
+    document.querySelectorAll(".cap-label, .shield").forEach((n) => n.remove());
+   }
   });
 }
 
@@ -841,7 +865,7 @@ async function snapNow() {
     (b.steps || []).forEach((s, i) => { if (s.t <= t) idx = i; });
     const c = grabPlayerFrame();
     if (isBlank(c)) return toast("That frame is black – let the video play a second and try again");
-    await photoPut(shotKey(v.id, idx), c.toDataURL("image/jpeg", 0.85));
+    await photoPut(shotKey(v.id, idx), c.toDataURL("image/jpeg", 0.9));
     renderBreakdown();
     toast(`Saved to step ${idx + 1}`);
   } catch (e) {

@@ -110,3 +110,8 @@ ol, ul { margin: 6px 0; padding-left: 22px; }
 body.readonly #newBtn { display: none; }
 body.readonly .step .shot { cursor: zoom-in; }
 a { color: var(--accent); }
+
+/* while taking step photos the video fills the screen (sharper photos) */
+.player-wrap.capturing { position: fixed; inset: 0; z-index: 50; background: #000; display: flex; align-items: center; justify-content: center; padding: 28px 0 0; }
+.player-wrap.capturing .player { width: min(100vw, calc((100vh - 28px) * 16 / 9)); border-radius: 0; }
+.cap-label { position: fixed; top: 0; left: 0; right: 0; height: 28px; line-height: 28px; text-align: center; font-size: 13px; color: #aaa; background: #000; z-index: 51; }
