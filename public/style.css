@@ -92,3 +92,5 @@ ol, ul { margin: 6px 0; padding-left: 22px; }
 .saved-item:hover { border-color: var(--accent); }
 .saved-item .shot { position: relative; width: 100%; aspect-ratio: 16/9; border-radius: 6px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: #0b0d10; margin-bottom: 6px; }
 .saved-item .shot img { width: 100%; height: 100%; object-fit: cover; }
+
+.shield { position: absolute; inset: 0; z-index: 2; cursor: wait; }

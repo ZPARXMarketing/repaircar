@@ -450,7 +450,7 @@ function makePlayer(id) {
   const create = () => {
     player = new YT.Player("yt", {
       videoId: id,
-      playerVars: { rel: 0, modestbranding: 1, playsinline: 1 },
+      playerVars: { rel: 0, modestbranding: 1, playsinline: 1, iv_load_policy: 3 },
       events: { onReady: () => (playerReady = true) },
     });
   };
@@ -471,7 +471,7 @@ async function ensureCapture() {
   if (capStream?.active) return true;
   toast("Pick THIS tab in the share popup so I can grab frames from the video", 6000);
   capStream = await navigator.mediaDevices.getDisplayMedia({
-    video: { displaySurface: "browser", frameRate: 10 },
+    video: { displaySurface: "browser", frameRate: 30 },
     audio: false,
     preferCurrentTab: true,
     selfBrowserSurface: "include",
@@ -492,7 +492,39 @@ function grabPlayerFrame() {
   c.width = Math.min(1280, Math.round(rect.width * sx));
   c.height = Math.round((c.width * 9) / 16);
   c.getContext("2d").drawImage(capVideo, rect.left * sx, rect.top * sy, rect.width * sx, rect.height * sy, 0, 0, c.width, c.height);
-  return c.toDataURL("image/jpeg", 0.85);
+  return c;
+}
+
+// True if the frame is (almost) all black – video still loading after a jump.
+function isBlank(c) {
+  const t = document.createElement("canvas");
+  t.width = 32; t.height = 18;
+  const x = t.getContext("2d");
+  x.drawImage(c, 0, 0, 32, 18);
+  const d = x.getImageData(0, 0, 32, 18).data;
+  let sum = 0, bright = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const l = 0.3 * d[i] + 0.59 * d[i + 1] + 0.11 * d[i + 2];
+    sum += l;
+    if (l > 40) bright++;
+  }
+  return sum / (d.length / 4) < 18 || bright < 20;
+}
+
+// Jump to t, let it actually play, then grab a non-black frame. Returns dataURL or null.
+async function captureAt(t) {
+  player.seekTo(Math.max(0, t - 1.5), true);
+  player.playVideo();
+  await waitPlaying();
+  const end = Date.now() + 8000;
+  while (player.getCurrentTime() < t && Date.now() < end) await sleep(80);
+  for (let tries = 0; tries < 8; tries++) {
+    await sleep(tries ? 400 : 700); // give the tab-capture stream time to show the new frame
+    if (player.getPlayerState() !== YT.PlayerState.PLAYING) { player.playVideo(); await waitPlaying(); }
+    const c = grabPlayerFrame();
+    if (!isBlank(c)) return c.toDataURL("image/jpeg", 0.85);
+  }
+  return null;
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -503,26 +535,27 @@ async function captureAll(btn) {
   await busy(btn, "Capturing…", async () => {
     await ensureCapture();
     const steps = b.steps || [];
+    let failed = 0;
     player.mute();
+    // cover the player so the mouse doesn't make YouTube show its title bar / controls in the photos
+    const shield = document.createElement("div");
+    shield.className = "shield";
+    $(".player").appendChild(shield);
     for (let i = 0; i < steps.length; i++) {
       btn.innerHTML = `<span class="spinner"></span>Step ${i + 1}/${steps.length}`;
       $(".player-wrap").scrollIntoView({ block: "start" });
-      // start a moment early and let it play into the step, so the frame is sharp (not a seek blur)
-      player.seekTo(Math.max(0, steps[i].t - 1), true);
-      player.playVideo();
-      await waitPlaying();
-      const end = Date.now() + 5000;
-      while (player.getCurrentTime() < steps[i].t && Date.now() < end) await sleep(80);
-      await sleep(200);
-      await photoPut(shotKey(v.id, i), grabPlayerFrame());
-      player.pauseVideo();
+      const img = await captureAt(steps[i].t);
+      if (img) await photoPut(shotKey(v.id, i), img);
+      else failed++;
       const n = document.querySelector(`#step-${i} .shot`);
       if (n) n.innerHTML = shotHtml(v.id, steps[i], i);
     }
+    player.pauseVideo();
     player.unMute();
+    shield.remove();
     capStream.getTracks().forEach((t) => t.stop());
     renderBreakdown();
-    toast("Step photos saved ✔ – tap any photo to see it big");
+    toast(failed ? `Photos saved ✔ – ${failed} step(s) stayed black, try “Redo all photos”` : "Step photos saved ✔ – tap any photo to see it big", 6000);
   });
 }
 
@@ -541,7 +574,9 @@ async function snapNow() {
     const t = player.getCurrentTime();
     let idx = 0;
     (b.steps || []).forEach((s, i) => { if (s.t <= t) idx = i; });
-    await photoPut(shotKey(v.id, idx), grabPlayerFrame());
+    const c = grabPlayerFrame();
+    if (isBlank(c)) return toast("That frame is black – let the video play a second and try again");
+    await photoPut(shotKey(v.id, idx), c.toDataURL("image/jpeg", 0.85));
     renderBreakdown();
     toast(`Saved to step ${idx + 1}`);
   } catch (e) {
