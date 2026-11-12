@@ -386,6 +386,7 @@ function renderBreakdown() {
           ${s.look_at ? `<div class="look">👀 ${esc(s.look_at)}</div>` : ""}
           ${s.warning ? `<div class="gotcha">⚠️ ${esc(s.warning)}</div>` : ""}
           <div class="row" style="margin-top:8px">
+            <button data-seek="${s.t}">▶ Play from here</button>
             <button data-save="${i}">⭐ Save</button>
             ${photos[shotKey(v.id, i)] ? `<button data-dl="${i}">⬇ Download</button>` : ""}
           </div>
@@ -438,8 +439,9 @@ function shotHtml(vid, s, i, img = photos[shotKey(vid, i)]) {
   return `<img src="https://i.ytimg.com/vi/${vid}/hqdefault.jpg" alt="" class="dim" /><span class="play">${desktop ? "📸 No photo yet · " : "▶ "}${fmtTime(s.t)}</span>`;
 }
 
+// Plays from just before the frame and keeps going (pause/scrub with YouTube's own controls).
 const clipHtml = (vid, t) =>
-  `<iframe src="https://www.youtube.com/embed/${vid}?start=${Math.max(0, t - 2)}&end=${t + 12}&autoplay=1&rel=0&playsinline=1" allow="autoplay; encrypted-media" allowfullscreen></iframe>`;
+  `<iframe src="https://www.youtube.com/embed/${vid}?start=${Math.max(0, Math.floor(t) - 1)}&autoplay=1&rel=0&playsinline=1" allow="autoplay; encrypted-media; fullscreen" allowfullscreen></iframe>`;
 
 // Full-screen viewer. item = {vid, s, img, label, note}; actions = extra buttons html; onAction(e) handles them.
 function viewer(item, { nav, actions = "", onAction } = {}) {
@@ -447,7 +449,7 @@ function viewer(item, { nav, actions = "", onAction } = {}) {
   const box = $("#lightbox");
   box.innerHTML = `
     <div class="lb-inner">
-      <div class="lb-media">${img ? `<img src="${img}" alt="" />${boxHtml(s.box)}` : clipHtml(vid, s.t)}</div>
+      <div class="lb-media">${img ? `<img src="${img}" alt="" data-clip title="Tap to play from here" />${boxHtml(s.box)}<span class="lb-play" data-clip>▶ Play from here</span>` : clipHtml(vid, s.t)}</div>
       <div class="lb-text"><b>${esc(item.label)}</b> <span class="ts">${fmtTime(s.t)}</span><br>${esc(s.detail || "")}
         ${s.look_at ? `<div class="look">👀 ${esc(s.look_at)}</div>` : ""}
         ${s.warning ? `<div class="gotcha">⚠️ ${esc(s.warning)}</div>` : ""}
@@ -455,7 +457,7 @@ function viewer(item, { nav, actions = "", onAction } = {}) {
       </div>
       <div class="row">
         ${nav ? `<button data-nav="-1">◀ Prev</button><button data-nav="1">Next ▶</button>` : ""}
-        ${img ? `<button data-clip>▶ Play this moment</button><button data-dl>⬇ Download</button>` : ""}
+        ${img ? `<button data-clip>▶ Play from here</button><button data-show>🖼 Photo</button><button data-dl>⬇ Download</button>` : ""}
         ${actions}
         <button data-close>Close</button>
       </div>
@@ -466,6 +468,7 @@ function viewer(item, { nav, actions = "", onAction } = {}) {
     if (e.target === box || d.close !== undefined) { box.classList.add("hidden"); box.innerHTML = ""; }
     else if (d.nav) nav(+d.nav);
     else if (d.clip !== undefined) box.querySelector(".lb-media").innerHTML = clipHtml(vid, s.t);
+    else if (d.show !== undefined) box.querySelector(".lb-media").innerHTML = `<img src="${img}" alt="" data-clip />${boxHtml(s.box)}<span class="lb-play" data-clip>▶ Play from here</span>`;
     else if (d.dl !== undefined) download(img, item.label);
     else if (onAction) onAction(e);
   };

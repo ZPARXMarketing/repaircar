@@ -115,3 +115,5 @@ a { color: var(--accent); }
 .player-wrap.capturing { position: fixed; inset: 0; z-index: 50; background: #000; display: flex; align-items: center; justify-content: center; padding: 28px 0 0; }
 .player-wrap.capturing .player { width: min(100vw, calc((100vh - 28px) * 16 / 9)); border-radius: 0; }
 .cap-label { position: fixed; top: 0; left: 0; right: 0; height: 28px; line-height: 28px; text-align: center; font-size: 13px; color: #aaa; background: #000; z-index: 51; }
+.lb-media img[data-clip] { cursor: pointer; }
+.lb-play { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); background: rgba(0,0,0,.75); color: #fff; padding: 6px 14px; border-radius: 99px; font-weight: 600; cursor: pointer; }
