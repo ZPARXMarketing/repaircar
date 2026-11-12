@@ -1,5 +1,9 @@
 # Car Repair Helper
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/ZPARXMarketing/repair)
+
+Open source (MIT). Bring your own [OpenRouter](https://openrouter.ai) key. Each person who deploys it runs their own copy on their own free Cloudflare account, with their own data.
+
 Tell it your car and the symptoms. It will:
 
 1. Rank the most likely problems with odds, how to confirm each one, and rough costs.
@@ -50,3 +54,15 @@ You can change these in `wrangler.toml`:
 ## Local dev
 
 Copy `.dev.vars.example` to `.dev.vars`, fill it in, then run `npm run dev`.
+
+## Safety note
+
+This is an AI helper, not a mechanic. Diagnoses, torque specs and steps can be wrong. Check critical specs in a service manual, and use jack stands. Get brakes, steering, airbags and fuel-system work checked by a professional if you're unsure.
+
+## Contributing
+
+Issues and pull requests are welcome. The app has no build step. The Worker is `src/index.js` and the frontend is plain HTML/CSS/JS in `public/`. Run it locally with `npm install` and `npm run dev`.
+
+## License
+
+MIT. See [LICENSE](LICENSE). The bundled Legible design system files in `public/legible/` are MIT-licensed too.
