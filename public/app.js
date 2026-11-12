@@ -138,28 +138,42 @@ function toast(msg, ms = 3500) {
   toast.timer = setTimeout(() => t.classList.add("hidden"), ms);
 }
 
-async function api(path, body) {
-  const res = await fetch(path, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-app-password": localStorage.getItem("appPassword") || "" },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({ error: "Bad response" }));
+async function api(path, body, { timeout = 120000 } = {}) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeout);
+  let res;
+  try {
+    res = await fetch(path, {
+      method: "POST",
+      signal: ctl.signal,
+      headers: { "content-type": "application/json", "x-app-password": localStorage.getItem("appPassword") || "" },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    throw new Error(e.name === "AbortError" ? "That took too long – tap it again to retry." : "Couldn't reach the server – check your connection.");
+  } finally {
+    clearTimeout(timer);
+  }
+  const data = await res.json().catch(() => ({ error: `Server error (${res.status}) – try again.` }));
   if (res.status === 401) {
     const pw = prompt("Password:");
-    if (pw) { localStorage.setItem("appPassword", pw); return api(path, body); }
+    if (pw) { localStorage.setItem("appPassword", pw); return api(path, body, { timeout }); }
   }
   if (!res.ok || data.error) throw new Error(data.error || res.statusText);
   return data;
 }
 
-async function busy(btn, label, fn) {
+// Spinner on a button while fn runs. With timer, shows elapsed seconds so a slow call doesn't look stuck.
+async function busy(btn, label, fn, { timer = false } = {}) {
   const old = btn.innerHTML;
   btn.disabled = true;
-  btn.innerHTML = `<span class="spinner"></span>${label}`;
+  const t0 = Date.now();
+  const paint = () => (btn.innerHTML = `<span class="spinner"></span>${label}${timer ? ` ${Math.round((Date.now() - t0) / 1000)}s` : ""}`);
+  paint();
+  const tick = timer && setInterval(paint, 1000);
   try { return await fn(); }
-  catch (e) { toast("Error: " + e.message, 6000); }
-  finally { btn.disabled = false; btn.innerHTML = old; }
+  catch (e) { toast("Error: " + e.message, 7000); }
+  finally { clearInterval(tick); btn.disabled = false; btn.innerHTML = old; }
 }
 
 /* ---------------- intake ---------------- */
@@ -396,7 +410,7 @@ async function getVideos(problem, btn, mode = "fix") {
     if (data.note) toast(data.note, 6000);
     renderAll();
     $("#videos").scrollIntoView({ behavior: "smooth" });
-  });
+  }, { timer: true });
 }
 
 function renderVideos() {
@@ -478,8 +492,8 @@ async function getBreakdown(video, btn) {
     state.active = video.id; save(); renderBreakdown();
     return $("#breakdown").scrollIntoView({ behavior: "smooth" });
   }
-  await busy(btn, "Watching the video (can take ~30-60s)…", async () => {
-    const data = await api("/api/breakdown", { videoId: video.id, car: state.car, problem: state.problem, length: video.length });
+  await busy(btn, "Watching the video…", async () => {
+    const data = await api("/api/breakdown", { videoId: video.id, car: state.car, problem: state.problem, length: video.length }, { timeout: 240000 });
     state.breakdowns[video.id] = { video, data, problem: state.problem?.name };
     state.active = video.id;
     save();
@@ -488,7 +502,8 @@ async function getBreakdown(video, btn) {
     renderBreakdown();
     ($(".banner") || $("#breakdown")).scrollIntoView({ behavior: "smooth", block: "center" });
     if ($(".banner")) toast("Steps ready ✔ – now click “Make step photos” to get the screenshots", 6000);
-  });
+    if (/failed|estimates/i.test(data.source || "")) toast("The AI couldn't watch this video, so steps and times are estimates from its description.", 8000);
+  }, { timer: true });
 }
 
 let player, playerReady = false, playerVid = null;
@@ -516,7 +531,8 @@ function renderBreakdown() {
         <button class="primary" id="captureAll">Make step photos</button>
       </div>` : ""}
     ${!canCapture ? `<p class="muted">On a phone: tap any step picture to play that exact moment. For real screenshots, open this on a computer once.</p>` : ""}
-    <div class="player-wrap"><div class="player"><div id="yt"></div></div></div>
+    <div class="player-wrap"><div class="player"><div id="yt"></div></div>
+      <div class="muted" style="text-align:right;margin-top:var(--space-1)">Video not loading? <a href="https://www.youtube.com/watch?v=${v.id}" target="_blank" rel="noopener">Open on YouTube ↗</a></div></div>
     <div class="row">
       ${canCapture ? `<button id="snapNow">📸 Snap frame</button>${haveAll ? `<button id="captureAll">📸 Redo photos</button>` : ""}` : ""}
       <button id="askVideo">Ask about this video</button>
@@ -878,7 +894,15 @@ function makePlayer(id, { force = false, clean = false } = {}) {
         playerVars: clean
           ? { controls: 0, disablekb: 1, fs: 0, rel: 0, iv_load_policy: 3, playsinline: 1, mute: 1, cc_load_policy: 0 }
           : { rel: 0, modestbranding: 1, playsinline: 1, iv_load_policy: 3 },
-        events: { onReady: () => { playerReady = true; resolve(); } },
+        events: {
+          onReady: () => { playerReady = true; resolve(); },
+          // 100 = removed/private, 101/150 = uploader blocked playing it outside YouTube
+          onError: (e) => {
+            const why = e.data === 100 ? "This video was removed or made private." : [101, 150].includes(e.data) ? "The uploader doesn't allow this video to play outside YouTube." : "This video won't play here.";
+            const box = $(".player");
+            if (box && !box.querySelector(".player-err")) box.insertAdjacentHTML("beforeend", `<div class="player-err"><p>${why}</p><a href="https://www.youtube.com/watch?v=${id}" target="_blank" rel="noopener">Open on YouTube ↗</a><p class="muted">The steps below still work.</p></div>`);
+          },
+        },
       });
     };
     if (window.YT?.Player) create();

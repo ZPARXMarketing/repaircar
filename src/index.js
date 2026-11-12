@@ -148,6 +148,7 @@ async function llm(env, messages, opts = {}) {
 async function llmOnce(env, messages, { model, jsonMode = true, maxTokens = 4000 } = {}) {
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
+    signal: AbortSignal.timeout(60000),
     headers: {
       authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
       "content-type": "application/json",
@@ -169,42 +170,52 @@ async function llmOnce(env, messages, { model, jsonMode = true, maxTokens = 4000
 }
 
 // Gemini (via OpenRouter Responses API) can watch YouTube links directly.
-async function videoLlm(env, prompt, videoUrl, attempt = 1) {
-  const res = await fetch("https://openrouter.ai/api/v1/responses", {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
-      "content-type": "application/json",
-      "X-Title": "Car Repair Helper",
-    },
-    body: JSON.stringify({
-      model: env.VIDEO_MODEL,
-      provider: { order: ["google-ai-studio"] },
-      max_output_tokens: 8000,
-      input: [
-        {
-          role: "user",
-          content: [
-            { type: "input_text", text: prompt },
-            { type: "input_video", video_url: videoUrl },
-          ],
+// OpenRouter is occasionally flaky with videos (502 "upstream request failed", or an empty 200),
+// so each attempt has a hard timeout and gets one quick retry.
+async function videoLlm(env, prompt, videoUrl) {
+  let lastErr;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await fetch("https://openrouter.ai/api/v1/responses", {
+        method: "POST",
+        signal: AbortSignal.timeout(70000),
+        headers: {
+          authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+          "content-type": "application/json",
+          "X-Title": "Car Repair Helper",
         },
-      ],
-    }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || data.error) {
-    if (attempt < 2) return videoLlm(env, prompt, videoUrl, attempt + 1);
-    throw new Error(`OpenRouter video: ${data.error?.message || res.status}`);
+        body: JSON.stringify({
+          model: env.VIDEO_MODEL,
+          provider: { order: ["google-ai-studio"] },
+          max_output_tokens: 8000,
+          input: [
+            {
+              role: "user",
+              content: [
+                { type: "input_text", text: prompt },
+                { type: "input_video", video_url: videoUrl },
+              ],
+            },
+          ],
+        }),
+      });
+      const raw = (await res.text()).trim();
+      let data = {};
+      try { data = JSON.parse(raw); } catch {}
+      if (!res.ok || data.error || !raw) throw new Error(data.error?.message || raw.slice(0, 80) || `HTTP ${res.status}, empty reply`);
+      // Only read the final answer, not the model's "reasoning" items.
+      const text = (data.output || [])
+        .filter((o) => o.type === "message")
+        .flatMap((o) => o.content || [])
+        .filter((c) => c.type === "output_text")
+        .map((c) => c.text)
+        .join("");
+      return parseJson(text);
+    } catch (e) {
+      lastErr = e.name === "TimeoutError" ? new Error("timed out after 70s") : e;
+    }
   }
-  // Only read the final answer, not the model's "reasoning" items.
-  const text = (data.output || [])
-    .filter((o) => o.type === "message")
-    .flatMap((o) => o.content || [])
-    .filter((c) => c.type === "output_text")
-    .map((c) => c.text)
-    .join("");
-  return parseJson(text);
+  throw new Error(`OpenRouter video: ${lastErr.message}`);
 }
 
 function parseJson(text) {
