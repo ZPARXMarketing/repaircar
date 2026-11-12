@@ -30,7 +30,7 @@ npx wrangler deploy
 ## Models
 
 You can change these in `wrangler.toml`:
-- `MODEL`: diagnosis, ordering videos, Q&A (default `anthropic/claude-sonnet-5.5`)
+- `MODEL`: diagnosis, ordering videos, Q&A (default `anthropic/claude-haiku-5.5`)
 - `VIDEO_MODEL`: watches the YouTube videos (default `google/gemini-3.8-flash`)
 
 ## Local dev
