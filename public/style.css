@@ -133,3 +133,11 @@ body.readonly #newBtn { display: none; }
   details.sec > summary { flex-wrap: wrap; row-gap: 0; }
   details.sec > summary .meta { margin-left: auto; }
 }
+
+/* cars + mode tabs */
+.chip { border-radius: var(--radius-pill); }
+.chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+.seg { display: flex; gap: 0; margin-bottom: var(--space-3); border: 2px solid var(--line); border-radius: var(--radius-md); overflow: hidden; }
+.seg button { flex: 1; border: 0; border-radius: 0; background: var(--surface); }
+.seg button + button { border-left: 2px solid var(--line); }
+.seg button[aria-selected="true"] { background: var(--accent); color: var(--on-accent); font-weight: 600; }

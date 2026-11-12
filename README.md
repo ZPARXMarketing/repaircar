@@ -17,15 +17,20 @@
 
 ---
 
-## 🛠️ What it does (in order)
+## 🛠️ What it does
 
-| Step | You do | The app does |
-| --- | --- | --- |
-| **1** | Type your car (year, make, model) and what it's doing | Lists the **most likely problems** with odds (e.g. "Failing alternator 65%"), how to confirm each one, and DIY vs. shop cost |
-| **2** | Click **"Find repair videos"** on a problem | Searches YouTube and puts the best videos **in the order to watch them** (diagnose → parts → fix → check) |
-| **3** | Click **"Steps + photos"** on a video | An AI **watches the whole video** and writes every step with its timestamp, the tools, the parts and the torque specs |
-| **4** | Click **"Make step photos"** (on a computer) | Jumps through the video and **screenshots every step**, with an orange box around the bolt or part |
-| **5** | Click **⭐ Save**, **📚 Save to Library** or **✅ Mark fixed** | Keeps your repairs, notes and photos, **synced to all your devices** |
+**Start:** save your car(s) once under **My cars**, then tap one. Every job is saved under that car.
+
+Then pick one of two paths:
+
+| 🔧 **Replace a part** (you already know what's broken) | 🩺 **Diagnose a problem** (you don't know yet) |
+| --- | --- |
+| Type the part, e.g. "alternator" | Describe what it's doing |
+| Get YouTube videos for that part on **your** car, **in the order to watch them** | Get the **most likely problems** with odds, how to confirm each, and DIY vs. shop cost |
+| Tap **Steps + photos**: an AI watches the video and writes every step with tools, parts and torque specs | Tap **🔧 Fix it** on a problem to jump into Replace-a-part with the part filled in |
+| On a computer, **Make step photos** screenshots every step, with the part boxed in orange | If a problem is hard to check by yourself, **🎥 Show me how to check** finds testing videos |
+
+Every job is **auto-saved** to that car's list. Add notes, mark it **✅ fixed**, **⭐ save** key photos, and send a **🔗 share link**. It all syncs to your other devices.
 
 ---
 

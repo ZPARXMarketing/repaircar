@@ -238,7 +238,9 @@ Return ONLY JSON in this shape:
       "time": "rough DIY time",
       "parts_cost": "rough parts cost USD",
       "shop_cost": "rough shop cost USD",
-      "search_hint": "best short YouTube search phrase for fixing this on this car"
+      "search_hint": "best short YouTube search phrase for fixing this on this car",
+      "part": "the part to replace to fix it, e.g. 'alternator' (empty if the fix isn't a part swap)",
+      "needs_video": true if confirming this is hard to do without watching someone test it (e.g. testing a sensor or a fuel pressure check), else false
     }
   ]
 }
@@ -348,12 +350,16 @@ function isoDuration(d = "") {
 
 /* ----------------------------- videos (ordered playlist) ----------------------------- */
 
-async function findVideos(env, { car, problem }) {
+async function findVideos(env, { car, problem, mode = "fix" }) {
   const carStr = carString(car);
   const plan = await llm(env, [
     {
       role: "system",
-      content: `Create YouTube search queries to help a DIYer fix a car problem from start to finish.
+      content: mode === "check"
+        ? `Create YouTube search queries for videos that show how to TEST / CONFIRM a suspected car problem (not how to repair it).
+Return JSON: {"queries":[{"stage":"stage name","query":"youtube search"}]}
+Use 2-3 stages, e.g. "Symptoms to look for", "How to test it". Include year, make, model. Keep queries short.`
+        : `Create YouTube search queries to help a DIYer fix a car problem from start to finish.
 Return JSON: {"queries":[{"stage":"stage name","query":"youtube search"}]}
 Use 3-5 stages in the order the owner would need them, e.g.:
 "Confirm the diagnosis" (testing), "Parts & tools", "Removal / replacement", "Reassembly & final checks".
@@ -381,7 +387,12 @@ Queries must include year, make, model (and engine if relevant). Keep queries sh
   const ranked = await llm(env, [
     {
       role: "system",
-      content: `You pick and ORDER the best YouTube videos to walk a DIYer through a repair from start to finish.
+      content: mode === "check"
+        ? `You pick and ORDER the best YouTube videos that show how to TEST / CONFIRM a suspected car problem before buying parts.
+Strongly prefer the exact vehicle. Skip pure repair videos, shorts and clickbait.
+Return JSON: {"playlist":[{"id":"videoId","stage":"stage name","why":"one line on what test it shows"}]}
+2-5 videos. Only use ids from the list.`
+        : `You pick and ORDER the best YouTube videos to walk a DIYer through a repair from start to finish.
 Strongly prefer videos for the exact same vehicle generation/engine. Prefer clear, well-viewed how-to videos from real mechanics. Skip shorts, ads, unrelated models, clickbait.
 Return JSON: {"playlist":[{"id":"videoId","stage":"stage name","why":"one line on what this video gives them / what to watch for"}]}
 Order by the sequence they should be watched (diagnose first, then the fix). 4-8 videos total. Only use ids from the list.`,

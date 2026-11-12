@@ -6,7 +6,7 @@ const state = JSON.parse(localStorage.getItem("repairState") || "{}");
 // Photos live in IndexedDB (see photo storage below) and, with sync on, in the cloud.
 const SHARE = new URLSearchParams(location.search).get("share"); // read-only share link mode
 let SYNC = false;
-const PROJECT_FIELDS = ["car", "symptoms", "history", "diagnosis", "problem", "videoSets", "breakdowns", "active", "notes"];
+const PROJECT_FIELDS = ["car", "symptoms", "part", "history", "diagnosis", "problem", "videoSets", "breakdowns", "active", "notes"];
 
 const save = () => {
   if (SHARE) return;
@@ -27,7 +27,7 @@ const save = () => {
 
 const snapshot = () => JSON.parse(JSON.stringify(Object.fromEntries(PROJECT_FIELDS.map((k) => [k, state[k]]))));
 const projectTitle = () =>
-  state.library?.find((p) => p.id === state.currentId)?.title || state.problem?.name || state.diagnosis?.problems?.[0]?.name || (state.symptoms || "Repair").slice(0, 60);
+  state.library?.find((p) => p.id === state.currentId)?.title || (state.part && !state.diagnosis ? `Replace ${state.part}` : "") || state.problem?.name || state.diagnosis?.problems?.[0]?.name || (state.symptoms || "Repair").slice(0, 60);
 
 /* ---------------- cloud sync ---------------- */
 async function req(method, path, body) {
@@ -163,36 +163,127 @@ async function busy(btn, label, fn) {
 }
 
 /* ---------------- intake ---------------- */
-const carFields = ["year", "make", "model", "engine", "mileage"];
-function intakeMeta() {
-  const c = state.car || {};
-  $("#intakeMeta").textContent = [c.year, c.make, c.model].filter(Boolean).join(" ");
-}
-function loadIntake() {
-  const car = state.car || JSON.parse(localStorage.getItem("lastCar") || "{}");
-  carFields.forEach((f) => ($("#" + f).value = car[f] || ""));
-  $("#symptoms").value = state.symptoms || "";
-  $("#intake").open = !state.diagnosis; // collapse once there's a diagnosis
-  intakeMeta();
-}
-function readCar() {
-  const car = {};
-  carFields.forEach((f) => (car[f] = $("#" + f).value.trim()));
-  return car;
+/* ---------------- my cars ---------------- */
+const carFields = ["year", "make", "model", "engine", "mileage", "nick"];
+const carLabel = (c = {}) => c.nick || [c.year, c.make, c.model].filter(Boolean).join(" ") || "Car";
+const selectedCar = () => (state.cars || []).find((c) => c.id === state.carId);
+const sameCar = (a = {}, b = {}) => ["year", "make", "model"].every((k) => String(a[k] || "").trim().toLowerCase() === String(b[k] || "").trim().toLowerCase());
+let editingCar = null; // car id being edited, "new", or null
+
+function renderGarage() {
+  const cars = state.cars || [];
+  const sel = selectedCar();
+  $("#intakeMeta").textContent = sel ? carLabel(sel) : "";
+  $("#carChips").innerHTML =
+    cars.map((c) => `<button class="chip" data-car="${c.id}" aria-pressed="${c.id === state.carId}">${esc(carLabel(c))}</button>`).join("") +
+    (editingCar || !cars.length ? "" : `<button class="chip" data-car-new>+ Add car</button>`) +
+    (sel ? `<button class="quiet" data-car-edit>Edit</button>` : "");
+  $("#carChips").querySelectorAll("[data-car]").forEach((b) => (b.onclick = () => selectCar(b.dataset.car)));
+  if ($("[data-car-new]")) $("[data-car-new]").onclick = () => openCarForm("new");
+  if ($("[data-car-edit]")) $("[data-car-edit]").onclick = () => openCarForm(state.carId);
+  const showForm = !!editingCar || !cars.length;
+  $("#carForm").classList.toggle("hidden", !showForm);
+  $("#carDelete").classList.toggle("hidden", !editingCar || editingCar === "new");
+  $("#carCancel").classList.toggle("hidden", !cars.length);
+  $("#modeBox").classList.toggle("hidden", !sel || showForm);
+  // tabs
+  const tab = state.tab || "replace";
+  document.querySelectorAll("[data-tab-mode]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tabMode === tab)));
+  $("#replacePane").classList.toggle("hidden", tab !== "replace");
+  $("#diagPane").classList.toggle("hidden", tab !== "diagnose");
 }
 
+function openCarForm(id) {
+  editingCar = id;
+  const c = id === "new" ? {} : (state.cars || []).find((x) => x.id === id) || {};
+  carFields.forEach((f) => ($("#" + f).value = c[f] || ""));
+  renderGarage();
+  $("#year").focus();
+}
+
+$("#carSave").onclick = () => {
+  const c = {};
+  carFields.forEach((f) => (c[f] = $("#" + f).value.trim()));
+  if (!c.make || !c.model) return toast("Add at least make and model");
+  state.cars ||= [];
+  if (editingCar && editingCar !== "new") Object.assign(state.cars.find((x) => x.id === editingCar), c);
+  else { c.id = "car" + Date.now().toString(36); state.cars.push(c); editingCar = null; return selectCar(c.id); }
+  editingCar = null;
+  if (state.carId) state.car = { ...selectedCar() };
+  save();
+  renderAll();
+};
+$("#carCancel").onclick = () => { editingCar = null; renderGarage(); };
+$("#carDelete").onclick = () => {
+  const c = (state.cars || []).find((x) => x.id === editingCar);
+  if (!c || !confirm(`Delete ${carLabel(c)}? Its jobs stay in the Library.`)) return;
+  state.cars = state.cars.filter((x) => x !== c);
+  if (state.carId === c.id) delete state.carId;
+  editingCar = null;
+  save();
+  renderAll();
+};
+
+function selectCar(id) {
+  if (id === state.carId) return;
+  ensureInLibrary(); // the current job is kept
+  if (state.diagnosis || state.part) clearCurrent();
+  state.carId = id;
+  state.car = { ...selectedCar() };
+  save();
+  renderAll();
+}
+
+document.querySelectorAll("[data-tab-mode]").forEach((b) => (b.onclick = () => { state.tab = b.dataset.tabMode; save(); renderGarage(); }));
+
+// Older saves had one car per repair: turn those into saved cars and link the jobs.
+function migrateCars() {
+  state.cars ||= [];
+  const add = (car) => {
+    if (!car?.make || !car?.model) return null;
+    let c = state.cars.find((x) => sameCar(x, car));
+    if (!c) { c = { id: "car" + Math.random().toString(36).slice(2, 9), ...Object.fromEntries(carFields.map((f) => [f, car[f] || ""])) }; state.cars.push(c); }
+    return c.id;
+  };
+  (state.library || []).forEach((p) => { if (!p.carId) p.carId = add(p.snapshot?.car); });
+  if (!state.carId) state.carId = add(state.car) || state.cars[0]?.id;
+  if (state.carId && !state.car?.make) state.car = { ...selectedCar() };
+}
+
+function loadIntake() {
+  $("#symptoms").value = state.symptoms || "";
+  $("#part").value = state.part || "";
+  $("#intake").open = !(state.diagnosis || state.videoSets?.length); // collapse once a job is underway
+  renderGarage();
+}
+const intakeMeta = () => renderGarage();
+
+/* ---------------- start a job ---------------- */
+// Replace a part: straight to videos, no diagnosis.
+$("#replaceBtn").onclick = (e) => {
+  const part = $("#part").value.trim();
+  if (!state.carId) return toast("Pick a car first");
+  if (!part) return toast("Type the part you're replacing");
+  if ((state.diagnosis || state.part) && state.part !== part) { ensureInLibrary(); clearCurrent(); } // new job, old one stays in the Library
+  state.part = part;
+  state.car = { ...selectedCar() };
+  ensureInLibrary();
+  $("#intake").open = false;
+  getVideos({ name: `Replace ${part}`, search_hint: `${carLabel(state.car)} ${part} replacement`, part }, e.currentTarget);
+};
+
 $("#diagnoseBtn").onclick = (e) => {
-  const car = readCar();
   const symptoms = $("#symptoms").value.trim();
-  if (!car.make || !car.model || !symptoms) return toast("Fill in at least make, model and symptoms");
+  if (!state.carId) return toast("Pick a car first");
+  if (!symptoms) return toast("Describe what it's doing");
+  const car = { ...selectedCar() };
   busy(e.currentTarget, "Thinking like a mechanic…", async () => {
+    if (state.part && !state.diagnosis) { ensureInLibrary(); clearCurrent(); } // was a replace-a-part job
     Object.assign(state, { car, symptoms, history: [], problem: null });
-    localStorage.setItem("lastCar", JSON.stringify(car));
     state.diagnosis = await api("/api/diagnose", { car, symptoms, history: [] });
     ensureInLibrary();
     save();
     $("#intake").open = false;
-    intakeMeta();
     renderAll();
     $("#diagnosis").scrollIntoView({ behavior: "smooth" });
   });
@@ -200,7 +291,7 @@ $("#diagnoseBtn").onclick = (e) => {
 
 $("#newBtn").onclick = () => {
   ensureInLibrary();
-  if (state.diagnosis && !confirm("Start a new repair? This one stays in your 📚 Library – open it from there any time.")) return;
+  if ((state.diagnosis || state.part) && !confirm("Start a new repair? This one stays in your 📚 Library – open it from there any time.")) return;
   clearCurrent();
   save();
   renderAll();
@@ -236,7 +327,8 @@ function renderDiagnosis() {
         </div>
         ${p.how_to_confirm?.length ? `<div><b>How to confirm</b><ol>${p.how_to_confirm.map((x) => `<li>${esc(x)}</li>`).join("")}</ol></div>` : ""}
         <div class="row">
-          <button class="primary" data-videos="${i}">▶ ${videoSetFor(p.name) ? "Search videos again" : "Find repair videos"}</button>
+          <button class="primary" data-videos="${i}">🔧 Fix it${p.part ? `: replace ${esc(p.part)}` : ""}</button>
+          ${p.needs_video ? `<button data-check="${i}">🎥 Show me how to check</button>` : ""}
           <button data-ask="${i}">Ask about this</button>
         </div>
         <div id="ask-${i}"></div>`, i === 0)).join("")}
@@ -247,7 +339,15 @@ function renderDiagnosis() {
         <button id="refineBtn">Update</button>
       </div>`, false)}`);
 
-  el.querySelectorAll("[data-videos]").forEach((b) => (b.onclick = () => getVideos(probs[b.dataset.videos], b)));
+  el.querySelectorAll("[data-videos]").forEach((b) => (b.onclick = () => {
+    const p = probs[b.dataset.videos];
+    state.part = p.part || p.name; // continue as a replace-a-part job
+    getVideos(p, b);
+  }));
+  el.querySelectorAll("[data-check]").forEach((b) => (b.onclick = () => {
+    const p = probs[b.dataset.check];
+    getVideos({ ...p, name: `How to check: ${p.name}` }, b, "check");
+  }));
   el.querySelectorAll("[data-ask]").forEach((b) => (b.onclick = () => askBox($("#ask-" + b.dataset.ask), probs[b.dataset.ask].name)));
   $("#refineBtn").onclick = (e) => {
     const info = $("#refineInput").value.trim();
@@ -284,10 +384,10 @@ function askBox(container, problem, context = "") {
 /* ---------------- videos (one list per problem – older lists are kept) ---------------- */
 const videoSetFor = (name) => (state.videoSets || []).find((x) => x.problem === name);
 
-async function getVideos(problem, btn) {
+async function getVideos(problem, btn, mode = "fix") {
   await busy(btn, "Searching YouTube & ordering…", async () => {
-    const data = await api("/api/videos", { car: state.car, problem });
-    state.problem = problem;
+    const data = await api("/api/videos", { car: state.car, problem, mode });
+    if (mode === "fix") state.problem = problem;
     state.videoSets = (state.videoSets || []).filter((x) => x.problem !== problem.name);
     state.videoSets.unshift({ problem: problem.name, videos: data.videos, at: Date.now() });
     secOpen["vids:" + problem.name] = true; // newest list opens
@@ -576,7 +676,7 @@ function renderSaved() {
 /* ---------------- current repair bar + library ---------------- */
 function renderProject() {
   const el = $("#project");
-  if (!state.diagnosis) return el.classList.add("hidden");
+  if (!state.diagnosis && !state.part) return el.classList.add("hidden");
   const item = state.library?.find((p) => p.id === state.currentId);
   el.className = "card project";
   el.innerHTML = `
@@ -596,12 +696,12 @@ function renderProject() {
 
 // Every repair lives in the Library from its first diagnosis, so nothing can be lost.
 function ensureInLibrary() {
-  if (state.diagnosis && !state.library?.some((p) => p.id === state.currentId)) addToLibrary("in_progress", true);
+  if ((state.diagnosis || state.part) && !state.library?.some((p) => p.id === state.currentId)) addToLibrary("in_progress", true);
 }
 
 function addToLibrary(status, quiet = false) {
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-  (state.library ||= []).unshift({ id, title: projectTitle(), status, created: Date.now(), updated: Date.now(), fixedAt: status === "fixed" ? Date.now() : null, notes: state.notes || "", snapshot: snapshot() });
+  (state.library ||= []).unshift({ id, carId: state.carId, title: projectTitle(), status, created: Date.now(), updated: Date.now(), fixedAt: status === "fixed" ? Date.now() : null, notes: state.notes || "", snapshot: snapshot() });
   state.currentId = id;
   save();
   renderProject();
@@ -623,9 +723,13 @@ const fmtDate = (t) => (t ? new Date(t).toLocaleDateString() : "");
 
 function renderLibrary() {
   const el = $("#library");
-  const items = state.library || [];
-  if (!items.length) return el.classList.add("hidden");
-  sec(el, "library", `📚 My Library <span class="muted">(${items.length})</span>`, `<span id="syncBadge">${SYNC ? "☁️ Synced" : "This device only"}</span>`, `
+  const all = state.library || [];
+  const car = selectedCar();
+  const items = car && !state.libAll ? all.filter((p) => p.carId === car.id) : all;
+  if (!all.length) return el.classList.add("hidden");
+  sec(el, "library", `📚 ${car && !state.libAll ? `${esc(carLabel(car))} jobs` : "All jobs"} <span class="muted">(${items.length})</span>`, `<span id="syncBadge">${SYNC ? "☁️ Synced" : "This device only"}</span>`, `
+    ${car && all.length !== items.length || state.libAll ? `<div><button class="quiet" id="libAll">${state.libAll ? "Show only this car" : `Show all cars (${all.length})`}</button></div>` : ""}
+    ${items.length ? "" : `<p class="muted">No jobs for this car yet.</p>`}
     <div class="lib-grid">${items.map((p, k) => {
       const vids = Object.keys(p.snapshot?.breakdowns || {});
       return `
@@ -644,12 +748,13 @@ function renderLibrary() {
         </div>
       </div>`;
     }).join("")}</div>`, true);
+  if ($("#libAll")) $("#libAll").onclick = () => { state.libAll = !state.libAll; save(); renderLibrary(); };
   el.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => openProject(items[b.dataset.open])));
   el.querySelectorAll("[data-share]").forEach((b) => (b.onclick = () => shareProject(items[b.dataset.share], b)));
   el.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => {
     const p = items[b.dataset.del];
     if (!confirm(`Delete “${p.title}” from your Library?`)) return;
-    items.splice(b.dataset.del, 1);
+    state.library = all.filter((x) => x !== p);
     if (state.currentId === p.id) delete state.currentId;
     save();
     renderLibrary();
@@ -666,6 +771,7 @@ function openProject(p) {
   if (state.videos && !state.videoSets) state.videoSets = [{ problem: state.problem?.name || "Videos", videos: state.videos, at: Date.now() }];
   delete state.videos;
   state.currentId = p.id;
+  if (p.carId) state.carId = p.carId;
   save();
   loadIntake();
   renderAll();
@@ -938,7 +1044,9 @@ async function snapNow() {
 
 /* ---------------- boot ---------------- */
 function renderAll() {
-  ensureInLibrary(); // catches a repair that was in progress before auto-save existed
+  migrateCars();
+  ensureInLibrary();
+  renderGarage(); // catches a repair that was in progress before auto-save existed
   renderLibrary();
   renderSaved();
   renderProject();
