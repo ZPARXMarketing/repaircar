@@ -968,7 +968,10 @@ function isBlank(c) {
 // The video keeps playing the whole time and we only jump around in it – pausing/resuming is what
 // makes YouTube flash its play/pause icons. We only take the photo once the video is really playing
 // (time moving forward, not ended/buffering) and any icon has had time to fade.
-async function captureAt(t) {
+let lastMouseMove = 0;
+const MOUSE_QUIET_MS = 3000; // YouTube hides its hover controls after the mouse rests
+
+async function captureAt(t, label) {
   const dur = player.getDuration?.() || 0;
   if (dur && t >= dur - 2) return { skip: "past the end of the video" };
   player.seekTo(Math.max(0, t - 1.5), true);
@@ -985,6 +988,14 @@ async function captureAt(t) {
     const a = player.getCurrentTime();
     await sleep(250);
     if (!(player.getCurrentTime() > a && player.getPlayerState() === YT.PlayerState.PLAYING)) continue;
+    // wait out any recent mouse movement so no ⏸ / controls are on screen
+    if (Date.now() - lastMouseMove < MOUSE_QUIET_MS) {
+      const was = label?.textContent;
+      if (label) label.textContent = "🖱️ Keep your mouse still for a moment…";
+      while (Date.now() - lastMouseMove < MOUSE_QUIET_MS && Date.now() < deadline) await sleep(100);
+      if (label) label.textContent = was;
+      continue; // re-check that it's still playing at the right spot
+    }
     const c = grabPlayerFrame();
     if (!isBlank(c)) return { img: c.toDataURL("image/jpeg", 0.9) };
   }
@@ -1007,21 +1018,24 @@ async function captureAll(btn) {
     wrap.classList.add("capturing");
     const label = document.createElement("div");
     label.className = "cap-label";
-    label.textContent = "📸 Getting the video ready…";
+    label.textContent = "📸 Getting the video ready… keep your mouse still";
     wrap.appendChild(label);
+    // Cover the whole screen BEFORE the player loads, so YouTube never sees the mouse
+    // (a hovered player shows its ⏸ button). Mouse moves are tracked so we can wait them out.
+    const shield = document.createElement("div");
+    shield.className = "shield";
+    lastMouseMove = Date.now();
+    shield.addEventListener("pointermove", () => (lastMouseMove = Date.now()));
+    document.body.appendChild(shield);
     // swap in a bare player (no controls, title or icons) just for the photos
     await makePlayer(v.id, { force: true, clean: true });
     player.mute();
     player.seekTo(Math.max(0, (steps[0]?.t || 0) - 1.5), true);
     player.playVideo();
     await waitPlaying(10000);
-    // cover the player so the mouse can't bring up any YouTube overlays
-    const shield = document.createElement("div");
-    shield.className = "shield";
-    $(".player").appendChild(shield);
     for (let i = 0; i < steps.length; i++) {
-      btn.innerHTML = label.textContent = `📸 Taking step photos… ${i + 1}/${steps.length}`;
-      const r = await captureAt(steps[i].t);
+      btn.innerHTML = label.textContent = `📸 Taking step photos… ${i + 1}/${steps.length} · keep your mouse still`;
+      const r = await captureAt(steps[i].t, label);
       if (r.img) await photoPut(shotKey(v.id, i), r.img);
       else { failed++; if (photos[shotKey(v.id, i)]) await photoDel(shotKey(v.id, i)); } // drop a bad old photo
       const n = document.querySelector(`#step-${i} .shot`);

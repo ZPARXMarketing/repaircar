@@ -120,7 +120,7 @@ details.sub > .sub-body { padding: 0 var(--space-3) var(--space-3); display: fle
 #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--surface); color: var(--ink); border: 2px solid var(--line); padding: var(--space-2) var(--space-4); border-radius: var(--radius-md); z-index: 30; max-width: 90vw; }
 .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--ink-2); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; vertical-align: -2px; margin-right: 6px; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.shield { position: absolute; inset: 0; z-index: 2; cursor: wait; }
+.shield { position: fixed; inset: 0; z-index: 60; cursor: none; background: transparent; }
 .player-wrap.capturing { position: fixed; inset: 0; z-index: 50; background: #000; display: flex; align-items: center; justify-content: center; padding: 28px 0 0; }
 .player-wrap.capturing .player { width: min(100vw, calc((100vh - 28px) * 16 / 9)); border-radius: 0; }
 .cap-label { position: fixed; top: 0; left: 0; right: 0; height: 28px; line-height: 28px; text-align: center; font-size: 13px; color: #aaa; background: #000; z-index: 51; }
