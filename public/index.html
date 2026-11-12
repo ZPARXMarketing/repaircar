@@ -4,12 +4,24 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Car Repair Helper</title>
+  <script>
+    // Legible boot: apply the saved theme before first paint (no flash)
+    try {
+      var p = JSON.parse(localStorage.getItem("legible.prefs.v1") || "{}");
+      var dark = matchMedia("(prefers-color-scheme: dark)").matches;
+      document.documentElement.setAttribute("data-theme", p.theme && p.theme !== "system" ? p.theme : dark ? "dark" : "light");
+    } catch (e) {}
+  </script>
+  <link rel="stylesheet" href="/legible/tokens.css" />
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
   <header>
     <h1>🔧 Car Repair Helper</h1>
-    <button id="newBtn" class="ghost">+ New repair</button>
+    <div class="row">
+      <button id="collapseAll" class="ghost" title="Collapse every section">⇕<span class="lbl"> Collapse all</span></button>
+      <button id="newBtn" class="ghost" title="New repair">+<span class="lbl"> New repair</span></button>
+    </div>
   </header>
 
   <main>
@@ -20,19 +32,22 @@
     <section id="saved" class="hidden"></section>
 
     <!-- Step 1: car + symptoms -->
-    <section id="intake" class="card">
-      <h2>1. Your car</h2>
-      <div class="grid">
-        <input id="year" placeholder="Year (2012)" inputmode="numeric" />
-        <input id="make" placeholder="Make (Honda)" />
-        <input id="model" placeholder="Model (Civic)" />
-        <input id="engine" placeholder="Engine / trim (1.8L EX) – optional" />
-        <input id="mileage" placeholder="Mileage – optional" inputmode="numeric" />
+    <details id="intake" class="card sec" open>
+      <summary><h2 class="grow">Your car &amp; symptoms</h2><span class="meta" id="intakeMeta"></span></summary>
+      <div class="sec-body">
+        <div class="grid">
+          <label class="field">Year<input id="year" placeholder="2012" inputmode="numeric" /></label>
+          <label class="field">Make<input id="make" placeholder="Honda" /></label>
+          <label class="field">Model<input id="model" placeholder="Civic" /></label>
+          <label class="field">Engine / trim<input id="engine" placeholder="1.8L EX (optional)" /></label>
+          <label class="field">Mileage<input id="mileage" placeholder="optional" inputmode="numeric" /></label>
+        </div>
+        <label class="field">What's it doing?
+          <textarea id="symptoms" rows="3" placeholder="e.g. Battery light flickers, slow to start in the morning, headlights dim at idle. Started last week."></textarea>
+        </label>
+        <div><button id="diagnoseBtn" class="primary">Find likely problems</button></div>
       </div>
-      <h2>2. What's it doing?</h2>
-      <textarea id="symptoms" rows="4" placeholder="e.g. Battery light flickers, car is slow to start in the morning, headlights dim at idle. Started last week."></textarea>
-      <button id="diagnoseBtn" class="primary">Find likely problems</button>
-    </section>
+    </details>
 
     <!-- Current repair: notes, save to library, mark fixed -->
     <section id="project" class="hidden"></section>
@@ -40,7 +55,7 @@
     <!-- Step 2: diagnosis -->
     <section id="diagnosis" class="hidden"></section>
 
-    <!-- Step 3: videos -->
+    <!-- Step 3: videos (one list per problem you searched) -->
     <section id="videos" class="hidden"></section>
 
     <!-- Step 4: breakdown of one video -->
@@ -49,6 +64,11 @@
 
   <div id="lightbox" class="hidden"></div>
   <div id="toast" class="hidden"></div>
+
+  <!-- Legible reader: the "Aa" button – theme, text size, spacing, contrast -->
+  <legible-reader target="body" presets="all" load-fonts></legible-reader>
+  <script type="module" src="/legible/legible-reader.js"></script>
+
   <script src="https://www.youtube.com/iframe_api"></script>
   <script src="/app.js"></script>
 </body>

@@ -6,7 +6,7 @@ const state = JSON.parse(localStorage.getItem("repairState") || "{}");
 // Photos live in IndexedDB (see photo storage below) and, with sync on, in the cloud.
 const SHARE = new URLSearchParams(location.search).get("share"); // read-only share link mode
 let SYNC = false;
-const PROJECT_FIELDS = ["car", "symptoms", "history", "diagnosis", "problem", "videos", "breakdowns", "active", "notes"];
+const PROJECT_FIELDS = ["car", "symptoms", "history", "diagnosis", "problem", "videoSets", "breakdowns", "active", "notes"];
 
 const save = () => {
   if (SHARE) return;
@@ -14,7 +14,6 @@ const save = () => {
   const item = state.currentId && state.library?.find((p) => p.id === state.currentId);
   if (item) { // keep the library copy of the current repair up to date
     item.snapshot = snapshot();
-    item.title = projectTitle();
     item.notes = state.notes || "";
     item.updated = Date.now();
   }
@@ -28,7 +27,7 @@ const save = () => {
 
 const snapshot = () => JSON.parse(JSON.stringify(Object.fromEntries(PROJECT_FIELDS.map((k) => [k, state[k]]))));
 const projectTitle = () =>
-  state.problem?.name || state.diagnosis?.problems?.[0]?.name || (state.symptoms || "Repair").slice(0, 60);
+  state.library?.find((p) => p.id === state.currentId)?.title || state.problem?.name || state.diagnosis?.problems?.[0]?.name || (state.symptoms || "Repair").slice(0, 60);
 
 /* ---------------- cloud sync ---------------- */
 async function req(method, path, body) {
@@ -98,6 +97,32 @@ async function fetchMissing(keys, rerender) {
 
 const esc = (s = "") => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmtTime = (t) => { t = Math.max(0, Math.floor(t || 0)); const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60; return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(s).padStart(2, "0"); };
+/* ---------------- collapsible sections (open/closed is remembered) ---------------- */
+const secOpen = JSON.parse(localStorage.getItem("secOpen") || "{}");
+const isOpen = (k, def) => ((k in secOpen ? secOpen[k] : def) ? "open" : "");
+document.addEventListener("toggle", (e) => {
+  const k = e.target.dataset?.sec;
+  if (!k) return;
+  secOpen[k] = e.target.open;
+  localStorage.setItem("secOpen", JSON.stringify(secOpen));
+}, true);
+// Whole section as a collapsible card.
+function sec(el, key, title, meta, body, def = true) {
+  el.className = "";
+  el.innerHTML = `<details class="card sec" data-sec="${esc(key)}" ${isOpen(key, def)}>
+    <summary><h2 class="grow">${title}</h2>${meta ? `<span class="meta">${meta}</span>` : ""}</summary>
+    <div class="sec-body">${body}</div></details>`;
+}
+// Collapsible block inside a section.
+const sub = (key, head, body, def = false) =>
+  `<details class="sub" data-sec="${esc(key)}" ${isOpen(key, def)}><summary><span class="grow">${head}</span></summary><div class="sub-body">${body}</div></details>`;
+const openSec = (id) => { const d = $(`#${id} > details.sec`); if (d) d.open = true; };
+
+$("#collapseAll").onclick = () => {
+  document.querySelectorAll("details.sec, details.sub, #intake").forEach((d) => (d.open = false));
+  scrollTo({ top: 0, behavior: "smooth" });
+};
+
 const md = (s = "") =>
   esc(s)
     .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
@@ -139,10 +164,16 @@ async function busy(btn, label, fn) {
 
 /* ---------------- intake ---------------- */
 const carFields = ["year", "make", "model", "engine", "mileage"];
+function intakeMeta() {
+  const c = state.car || {};
+  $("#intakeMeta").textContent = [c.year, c.make, c.model].filter(Boolean).join(" ");
+}
 function loadIntake() {
   const car = state.car || JSON.parse(localStorage.getItem("lastCar") || "{}");
   carFields.forEach((f) => ($("#" + f).value = car[f] || ""));
   $("#symptoms").value = state.symptoms || "";
+  $("#intake").open = !state.diagnosis; // collapse once there's a diagnosis
+  intakeMeta();
 }
 function readCar() {
   const car = {};
@@ -155,10 +186,12 @@ $("#diagnoseBtn").onclick = (e) => {
   const symptoms = $("#symptoms").value.trim();
   if (!car.make || !car.model || !symptoms) return toast("Fill in at least make, model and symptoms");
   busy(e.currentTarget, "Thinking like a mechanic…", async () => {
-    Object.assign(state, { car, symptoms, history: [], videos: null, problem: null });
+    Object.assign(state, { car, symptoms, history: [], problem: null });
     localStorage.setItem("lastCar", JSON.stringify(car));
     state.diagnosis = await api("/api/diagnose", { car, symptoms, history: [] });
     save();
+    $("#intake").open = false;
+    intakeMeta();
     renderAll();
     $("#diagnosis").scrollIntoView({ behavior: "smooth" });
   });
@@ -186,41 +219,35 @@ function renderDiagnosis() {
   const d = state.diagnosis;
   const el = $("#diagnosis");
   if (!d) return el.classList.add("hidden");
-  el.classList.remove("hidden");
-  el.className = "card";
-  el.innerHTML = `
-    <h2>Most likely problems</h2>
-    <p>${esc(d.summary)}</p>
-    ${d.safety_warning ? `<div class="warn">⚠️ ${esc(d.safety_warning)}</div>` : ""}
-    ${(d.problems || []).map((p, i) => `
-      <div class="problem">
-        <div class="top"><h3>${i + 1}. ${esc(p.name)}</h3><span class="pct">${p.likelihood}%</span></div>
-        <div class="bar"><div style="width:${Math.min(100, p.likelihood)}%"></div></div>
+  const probs = d.problems || [];
+  sec(el, "diagnosis", "Likely problems", `${probs.length} found`, `
+    <div class="summary">${esc(d.summary)}</div>
+    ${d.safety_warning ? `<div class="alert" role="alert"><b>⚠ Warning</b><span>${esc(d.safety_warning)}</span></div>` : ""}
+    ${probs.map((p, i) => sub(`prob:${p.name}`, `
+        <span class="row" style="justify-content:space-between;width:100%">
+          <b>${i + 1}. ${esc(p.name)}</b>
+          <span class="row"><span class="bar"><div style="width:${Math.min(100, p.likelihood)}%"></div></span><span class="pct">${p.likelihood}%</span></span>
+        </span>`, `
         <div>${esc(p.why)}</div>
         <div class="tags">
-          <span class="tag">🛠 ${esc(p.difficulty)}</span>
-          <span class="tag">⏱ ${esc(p.time)}</span>
-          <span class="tag">🔩 Parts ${esc(p.parts_cost)}</span>
-          <span class="tag">🏪 Shop ${esc(p.shop_cost)}</span>
+          <span class="tag">🛠 ${esc(p.difficulty)}</span><span class="tag">⏱ ${esc(p.time)}</span>
+          <span class="tag">🔩 Parts ${esc(p.parts_cost)}</span><span class="tag">🏪 Shop ${esc(p.shop_cost)}</span>
         </div>
-        ${p.how_to_confirm?.length ? `<b>How to confirm:</b><ol>${p.how_to_confirm.map((s) => `<li>${esc(s)}</li>`).join("")}</ol>` : ""}
+        ${p.how_to_confirm?.length ? `<div><b>How to confirm</b><ol>${p.how_to_confirm.map((x) => `<li>${esc(x)}</li>`).join("")}</ol></div>` : ""}
         <div class="row">
-          <button class="primary" data-videos="${i}">▶ Find repair videos (in order)</button>
+          <button class="primary" data-videos="${i}">▶ ${videoSetFor(p.name) ? "Search videos again" : "Find repair videos"}</button>
           <button data-ask="${i}">Ask about this</button>
         </div>
-        <div class="ask-box" id="ask-${i}"></div>
-      </div>`).join("")}
-    ${d.questions?.length ? `
-      <h2>Help me narrow it down</h2>
-      <p class="muted">Answer any of these (or add new info) and I'll re-rank.</p>
-      <ul>${d.questions.map((q) => `<li>${esc(q)}</li>`).join("")}</ul>` : ""}
-    <div class="qa">
-      <input id="refineInput" placeholder="e.g. Battery tested fine, the light comes on when I turn on the AC…" />
-      <button id="refineBtn">Update</button>
-    </div>`;
+        <div id="ask-${i}"></div>`, i === 0)).join("")}
+    ${sub("refine", `<b>Narrow it down</b> <span class="muted">${d.questions?.length ? `· ${d.questions.length} questions` : ""}</span>`, `
+      ${d.questions?.length ? `<ul>${d.questions.map((q) => `<li>${esc(q)}</li>`).join("")}</ul>` : ""}
+      <div class="qa">
+        <input id="refineInput" placeholder="Answer a question or add info – e.g. battery tested fine…" />
+        <button id="refineBtn">Update</button>
+      </div>`, false)}`);
 
-  el.querySelectorAll("[data-videos]").forEach((b) => (b.onclick = () => getVideos(d.problems[b.dataset.videos], b)));
-  el.querySelectorAll("[data-ask]").forEach((b) => (b.onclick = () => askBox($("#ask-" + b.dataset.ask), d.problems[b.dataset.ask].name)));
+  el.querySelectorAll("[data-videos]").forEach((b) => (b.onclick = () => getVideos(probs[b.dataset.videos], b)));
+  el.querySelectorAll("[data-ask]").forEach((b) => (b.onclick = () => askBox($("#ask-" + b.dataset.ask), probs[b.dataset.ask].name)));
   $("#refineBtn").onclick = (e) => {
     const info = $("#refineInput").value.trim();
     if (!info) return;
@@ -253,12 +280,17 @@ function askBox(container, problem, context = "") {
   input.focus();
 }
 
-/* ---------------- videos ---------------- */
+/* ---------------- videos (one list per problem – older lists are kept) ---------------- */
+const videoSetFor = (name) => (state.videoSets || []).find((x) => x.problem === name);
+
 async function getVideos(problem, btn) {
   await busy(btn, "Searching YouTube & ordering…", async () => {
     const data = await api("/api/videos", { car: state.car, problem });
     state.problem = problem;
-    state.videos = data.videos;
+    state.videoSets = (state.videoSets || []).filter((x) => x.problem !== problem.name);
+    state.videoSets.unshift({ problem: problem.name, videos: data.videos, at: Date.now() });
+    secOpen["vids:" + problem.name] = true; // newest list opens
+    secOpen.videos = true;
     save();
     if (data.note) toast(data.note, 6000);
     renderAll();
@@ -268,26 +300,39 @@ async function getVideos(problem, btn) {
 
 function renderVideos() {
   const el = $("#videos");
-  if (!state.videos) return el.classList.add("hidden");
-  el.className = "card";
-  el.innerHTML = `
-    <h2>Watch in this order: ${esc(state.problem?.name)}</h2>
-    ${!state.videos.length ? `<p>No videos found. Try again or tweak the car details.</p>` : ""}
-    ${state.videos.map((v, i) => `
-      <div class="video">
-        <a href="https://www.youtube.com/watch?v=${v.id}" target="_blank" rel="noopener"><img loading="lazy" src="https://i.ytimg.com/vi/${v.id}/mqdefault.jpg" alt="" /></a>
-        <div>
-          <div class="stage"><span class="num">${i + 1}</span>${esc(v.stage)}</div>
-          <h3>${esc(v.title)}</h3>
-          <div class="muted">${esc(v.channel)} · ${esc(v.length)} · ${esc(v.views)}</div>
-          <p>${esc(v.why)}</p>
-          <div class="row">
-            <button class="primary" data-break="${i}">${state.breakdowns?.[v.id] ? "📋 Open steps ✔" : "📋 Step-by-step + screenshots"}</button>
-            <a href="https://www.youtube.com/watch?v=${v.id}" target="_blank" rel="noopener"><button>Open on YouTube</button></a>
+  const sets = state.videoSets || [];
+  if (!sets.length) return el.classList.add("hidden");
+  const total = sets.reduce((n, x) => n + x.videos.length, 0);
+  sec(el, "videos", "Repair videos", `${total} videos · ${sets.length} list${sets.length === 1 ? "" : "s"}`,
+    sets.map((set, si) => sub(`vids:${set.problem}`, `<b>${esc(set.problem)}</b> <span class="muted">· ${set.videos.length} videos, watch in order</span>`, `
+      ${!set.videos.length ? `<p>No videos found. Try again or tweak the car details.</p>` : ""}
+      ${set.videos.map((v, i) => `
+        <div class="video">
+          <a href="https://www.youtube.com/watch?v=${v.id}" target="_blank" rel="noopener"><img loading="lazy" src="https://i.ytimg.com/vi/${v.id}/mqdefault.jpg" alt="" /></a>
+          <div>
+            <div class="stage"><span class="num">${i + 1}</span>${esc(v.stage)}</div>
+            <h3>${esc(v.title)}</h3>
+            <div class="muted">${esc(v.channel)} · ${esc(v.length)} · ${esc(v.views)}</div>
+            <div class="muted why">${esc(v.why)}</div>
+            <div class="row" style="margin-top:var(--space-2)">
+              <button class="${state.breakdowns?.[v.id] ? "" : "primary"}" data-break="${si}:${i}">${state.breakdowns?.[v.id] ? "📋 Open steps ✔" : "📋 Steps + photos"}</button>
+              <a href="https://www.youtube.com/watch?v=${v.id}" target="_blank" rel="noopener">YouTube ↗</a>
+            </div>
           </div>
-        </div>
-      </div>`).join("")}`;
-  el.querySelectorAll("[data-break]").forEach((b) => (b.onclick = () => getBreakdown(state.videos[b.dataset.break], b)));
+        </div>`).join("")}
+      <div><button class="quiet" data-delset="${si}">Remove this list</button></div>`, si === 0)).join(""));
+  el.querySelectorAll("[data-break]").forEach((b) => (b.onclick = () => {
+    const [si, i] = b.dataset.break.split(":").map(Number);
+    state.problem = (state.diagnosis?.problems || []).find((p) => p.name === sets[si].problem) || { name: sets[si].problem };
+    getBreakdown(sets[si].videos[i], b);
+  }));
+  el.querySelectorAll("[data-delset]").forEach((b) => (b.onclick = () => {
+    if (!confirm("Remove this video list? (Videos you opened steps for stay.)")) return;
+    sets.splice(+b.dataset.delset, 1);
+    save();
+    renderVideos();
+    renderDiagnosis();
+  }));
 }
 
 /* ---------------- photo storage (IndexedDB – much bigger than localStorage) ---------------- */
@@ -337,6 +382,7 @@ async function getBreakdown(video, btn) {
     state.breakdowns[video.id] = { video, data, problem: state.problem?.name };
     state.active = video.id;
     save();
+    secOpen.breakdown = true;
     renderVideos();
     renderBreakdown();
     ($(".banner") || $("#breakdown")).scrollIntoView({ behavior: "smooth", block: "center" });
@@ -351,18 +397,18 @@ function renderBreakdown() {
   if (!ids.length) return el.classList.add("hidden");
   if (!active()) state.active = ids[ids.length - 1];
   const { video: v, data: b } = active();
-  el.className = "card";
   const canCapture = !!navigator.mediaDevices?.getDisplayMedia && !/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
   const haveAll = (b.steps || []).every((_, i) => photos[shotKey(v.id, i)]);
   const list = (title, arr) => (arr?.length ? `<div><b>${title}</b><ul>${arr.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : "");
+  const extras = (b.tools?.length || 0) + (b.parts?.length || 0) + (b.specs?.length || 0);
+  const nPhotos = (b.steps || []).filter((_, i) => photos[shotKey(v.id, i)]).length;
 
-  el.innerHTML = `
+  sec(el, "breakdown", "Step-by-step", `${ids.length} video${ids.length === 1 ? "" : "s"}`, `
     <div class="tabs">${ids.map((id) => {
       const x = state.breakdowns[id].video;
       return `<div class="tab ${id === state.active ? "on" : ""}" data-tab="${id}"><img src="https://i.ytimg.com/vi/${id}/default.jpg" alt=""><span>${esc(x.title)}</span><b data-close-tab="${id}" title="Remove">✕</b></div>`;
     }).join("")}</div>
-    <h2>${esc(v.title)}</h2>
-    <p>${esc(b.overview)} <span class="muted">(${esc(b.source)})</span></p>
+    <div><h3>${esc(v.title)}</h3><div class="muted">${esc(b.overview)} (${esc(b.source)})</div></div>
     ${canCapture && !haveAll ? `
       <div class="banner">
         <div><b>📸 This video has no step photos yet</b><br><span class="muted">Click, then pick <b>this tab</b> in the popup and hit Share. It jumps through the video and snaps each step (~1 min). Keep this tab open.</span></div>
@@ -370,13 +416,13 @@ function renderBreakdown() {
       </div>` : ""}
     ${!canCapture ? `<p class="muted">On a phone: tap any step picture to play that exact moment. For real screenshots, open this on a computer once.</p>` : ""}
     <div class="player-wrap"><div class="player"><div id="yt"></div></div></div>
-    <div class="row" style="margin:8px 0">
-      ${canCapture ? `<button id="snapNow">📸 Snap current frame</button>${haveAll ? `<button id="captureAll">📸 Redo all photos</button>` : ""}` : ""}
+    <div class="row">
+      ${canCapture ? `<button id="snapNow">📸 Snap frame</button>${haveAll ? `<button id="captureAll">📸 Redo photos</button>` : ""}` : ""}
       <button id="askVideo">Ask about this video</button>
     </div>
     <div id="askVideoBox"></div>
-    <div class="cols">${list("🧰 Tools", b.tools)}${list("🔩 Parts", b.parts)}${list("📏 Specs", b.specs)}</div>
-    <h2>Steps</h2>
+    ${extras ? sub("extras", `<b>🧰 Tools, parts &amp; specs</b> <span class="muted">· ${extras}</span>`, `<div class="cols">${list("🧰 Tools", b.tools)}${list("🔩 Parts", b.parts)}${list("📏 Specs", b.specs)}</div>`, false) : ""}
+    ${sub("steps", `<b>Steps</b> <span class="muted">· ${(b.steps || []).length} steps, ${nPhotos} photos</span>`, `<div>
     ${(b.steps || []).map((s, i) => `
       <div class="step" id="step-${i}">
         <div class="shot" data-i="${i}">${shotHtml(v.id, s, i)}</div>
@@ -385,13 +431,13 @@ function renderBreakdown() {
           <div>${esc(s.detail)}</div>
           ${s.look_at ? `<div class="look">👀 ${esc(s.look_at)}</div>` : ""}
           ${s.warning ? `<div class="gotcha">⚠️ ${esc(s.warning)}</div>` : ""}
-          <div class="row" style="margin-top:8px">
+          <div class="row" style="margin-top:var(--space-2)">
             <button data-seek="${s.t}">▶ Play from here</button>
             <button data-save="${i}">⭐ Save</button>
             ${photos[shotKey(v.id, i)] ? `<button data-dl="${i}">⬇ Download</button>` : ""}
           </div>
         </div>
-      </div>`).join("")}`;
+      </div>`).join("")}</div>`, true)}`);
 
   el.querySelectorAll("[data-tab]").forEach((n) => (n.onclick = (e) => {
     if (e.target.dataset.closeTab) return;
@@ -514,16 +560,14 @@ function renderSaved() {
   const el = $("#saved");
   const items = state.saved || [];
   if (!items.length) return el.classList.add("hidden");
-  el.className = "card";
-  el.innerHTML = `
-    <h2>⭐ Saved photos (${items.length})</h2>
+  sec(el, "saved", "⭐ Saved photos", `${items.length}`, `
     <div class="saved-grid">${items.map((x, k) => `
       <div class="saved-item" data-k="${k}">
         <div class="shot">${shotHtml(x.vid, x.step, 0, x.hasImg ? photos["saved:" + x.id] : null)}</div>
         <div class="muted">${esc(x.videoTitle)}</div>
         <b>${x.stepNo}. ${esc(x.step.title)}</b>
         ${x.note ? `<div class="note">📝 ${esc(x.note)}</div>` : ""}
-      </div>`).join("")}</div>`;
+      </div>`).join("")}</div>`, true);
   el.querySelectorAll(".saved-item").forEach((n) => (n.onclick = () => openSaved(+n.dataset.k)));
   fetchMissing(items.filter((x) => x.hasImg).map((x) => "saved:" + x.id), renderSaved);
 }
@@ -535,12 +579,12 @@ function renderProject() {
   const item = state.library?.find((p) => p.id === state.currentId);
   el.className = "card project";
   el.innerHTML = `
-    <div class="row" style="justify-content:space-between">
-      <div><span class="muted">Current repair</span><h2 style="margin:2px 0">${esc(projectTitle())}</h2>
+    <div class="project-head">
+      <div><span class="muted">Current repair</span><h2>${esc(projectTitle())}</h2>
         ${item ? `<span class="badge ${item.status}">${item.status === "fixed" ? "✅ Fixed" : "🔧 In progress"}</span> <span class="muted">· saved in Library</span>` : `<span class="muted">Not in your Library yet</span>`}
       </div>
       <div class="row">
-        ${item ? "" : `<button class="primary" id="addLib" style="margin:0">📚 Save to Library</button>`}
+        ${item ? "" : `<button class="primary" id="addLib">📚 Save to Library</button>`}
         ${item?.status === "fixed" ? `<button id="markOpen">Reopen</button>` : `<button id="markFixed">✅ Mark fixed</button>`}
       </div>
     </div>
@@ -577,9 +621,7 @@ function renderLibrary() {
   const el = $("#library");
   const items = state.library || [];
   if (!items.length) return el.classList.add("hidden");
-  el.className = "card";
-  el.innerHTML = `
-    <div class="row" style="justify-content:space-between"><h2>📚 My Library (${items.length})</h2><span class="muted" id="syncBadge">${SYNC ? "☁️ Synced" : "This device only"}</span></div>
+  sec(el, "library", `📚 My Library <span class="muted">(${items.length})</span>`, `<span id="syncBadge">${SYNC ? "☁️ Synced" : "This device only"}</span>`, `
     <div class="lib-grid">${items.map((p, k) => {
       const vids = Object.keys(p.snapshot?.breakdowns || {});
       return `
@@ -590,14 +632,14 @@ function renderLibrary() {
           <b>${esc(p.title)}</b>
           <div class="muted">${esc(carName(p.snapshot?.car))} · ${p.status === "fixed" ? "fixed " + fmtDate(p.fixedAt) : "started " + fmtDate(p.created)} · ${vids.length} video${vids.length === 1 ? "" : "s"}</div>
           ${p.notes ? `<div class="note">📝 ${esc(p.notes.slice(0, 140))}${p.notes.length > 140 ? "…" : ""}</div>` : ""}
-          <div class="row" style="margin-top:6px">
+          <div class="row" style="margin-top:var(--space-1)">
             <button data-open="${k}">${p.id === state.currentId ? "Open ✔" : "Open"}</button>
             ${SYNC ? `<button data-share="${k}">🔗 Share link</button>` : ""}
             <button data-del="${k}">🗑</button>
           </div>
         </div>
       </div>`;
-    }).join("")}</div>`;
+    }).join("")}</div>`, true);
   el.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => openProject(items[b.dataset.open])));
   el.querySelectorAll("[data-share]").forEach((b) => (b.onclick = () => shareProject(items[b.dataset.share], b)));
   el.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => {
@@ -617,6 +659,8 @@ function openProject(p) {
   clearCurrent();
   Object.assign(state, JSON.parse(JSON.stringify(p.snapshot || {})));
   state.breakdowns ||= {};
+  if (state.videos && !state.videoSets) state.videoSets = [{ problem: state.problem?.name || "Videos", videos: state.videos, at: Date.now() }];
+  delete state.videos;
   state.currentId = p.id;
   save();
   loadIntake();
@@ -734,6 +778,7 @@ function makePlayer(id, { force = false, clean = false } = {}) {
 
 function seek(t) {
   if (!playerReady) return toast("Player still loading…");
+  openSec("breakdown");
   player.seekTo(t, true);
   player.playVideo();
   $(".player-wrap").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -817,6 +862,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function captureAll(btn) {
   if (!playerReady) return toast("Player still loading…");
   const { video: v, data: b } = active();
+  openSec("breakdown");
   await busy(btn, "Capturing…", async () => {
    try {
     await ensureCapture();
@@ -902,6 +948,8 @@ if (state.breakdown && state.video) {
   state.breakdowns[state.video.id] = { video: state.video, data: state.breakdown, problem: state.problem?.name };
   state.active = state.video.id;
 }
+if (state.videos && !state.videoSets) state.videoSets = [{ problem: state.problem?.name || "Videos", videos: state.videos, at: Date.now() }];
+delete state.videos;
 const oldShots = state.shots || {};
 delete state.breakdown; delete state.video; delete state.shots;
 
@@ -930,6 +978,8 @@ async function boot() {
       for (const k of Object.keys(state)) delete state[k];
       Object.assign(state, remote.state);
       state.breakdowns ||= {};
+      if (state.videos && !state.videoSets) state.videoSets = [{ problem: state.problem?.name || "Videos", videos: state.videos, at: Date.now() }];
+      delete state.videos;
       localStorage.setItem("repairState", JSON.stringify(state));
       loadIntake();
     } else if (state.updatedAt) {

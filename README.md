@@ -9,6 +9,12 @@ Tell it your car and the symptoms. It will:
 
 It runs on Cloudflare Workers.
 
+## Design
+
+The app uses the [Legible design system](https://github.com/ZPARXMarketing/Legible-DesignSystem). Its tokens, component styles and the `<legible-reader>` "Aa" panel are copied into `public/legible/`; the MIT license is included there. To update them, copy `dist/tokens.css`, `dist/legible-reader.js` and `packages/components/bundle.css` from that repo.
+
+Every section folds up (▸). The app remembers which sections are open, and "⇕ Collapse all" folds everything.
+
 ## Sync, Library & share links
 
 - **Sync:** your Library, saved photos and step photos sync across devices. You need `APP_PASSWORD` set. Storage is a free Workers KV namespace (`STORE`), which Cloudflare creates automatically on deploy.
