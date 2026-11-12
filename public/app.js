@@ -787,19 +787,29 @@ function isBlank(c) {
 
 // Jump to t, let it actually play, then grab a non-black frame. Returns dataURL or null.
 // The video keeps playing the whole time and we only jump around in it – pausing/resuming is what
-// makes YouTube flash its big play/pause icon in the middle.
+// makes YouTube flash its play/pause icons. We only take the photo once the video is really playing
+// (time moving forward, not ended/buffering) and any icon has had time to fade.
 async function captureAt(t) {
+  const dur = player.getDuration?.() || 0;
+  if (dur && t >= dur - 2) return { skip: "past the end of the video" };
   player.seekTo(Math.max(0, t - 1.5), true);
-  if (player.getPlayerState() !== YT.PlayerState.PLAYING) { player.playVideo(); await waitPlaying(); }
-  const end = Date.now() + 8000;
-  while (player.getCurrentTime() < t && Date.now() < end) await sleep(80);
-  for (let tries = 0; tries < 8; tries++) {
-    await sleep(tries ? 400 : 1100); // let any icon fade and the tab-capture stream catch up
-    if (player.getPlayerState() !== YT.PlayerState.PLAYING) { player.playVideo(); await waitPlaying(); }
+  const deadline = Date.now() + 15000; // give up on this step after 15s
+  let first = true;
+  while (Date.now() < deadline) {
+    const st = player.getPlayerState();
+    if (st === YT.PlayerState.ENDED) return { skip: "video ended" };
+    if (st !== YT.PlayerState.PLAYING && st !== YT.PlayerState.BUFFERING) player.playVideo();
+    while (player.getCurrentTime() < t && Date.now() < deadline) await sleep(80);
+    await sleep(first ? 1200 : 500);
+    first = false;
+    // only shoot when the video is really playing (time moving), so no play/pause/loading icons
+    const a = player.getCurrentTime();
+    await sleep(250);
+    if (!(player.getCurrentTime() > a && player.getPlayerState() === YT.PlayerState.PLAYING)) continue;
     const c = grabPlayerFrame();
-    if (!isBlank(c)) return c.toDataURL("image/jpeg", 0.9);
+    if (!isBlank(c)) return { img: c.toDataURL("image/jpeg", 0.9) };
   }
-  return null;
+  return { skip: "couldn't get a clear frame" };
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -831,9 +841,9 @@ async function captureAll(btn) {
     $(".player").appendChild(shield);
     for (let i = 0; i < steps.length; i++) {
       btn.innerHTML = label.textContent = `📸 Taking step photos… ${i + 1}/${steps.length}`;
-      const img = await captureAt(steps[i].t);
-      if (img) await photoPut(shotKey(v.id, i), img);
-      else failed++;
+      const r = await captureAt(steps[i].t);
+      if (r.img) await photoPut(shotKey(v.id, i), r.img);
+      else { failed++; if (photos[shotKey(v.id, i)]) await photoDel(shotKey(v.id, i)); } // drop a bad old photo
       const n = document.querySelector(`#step-${i} .shot`);
       if (n) n.innerHTML = shotHtml(v.id, steps[i], i);
     }
@@ -843,7 +853,7 @@ async function captureAll(btn) {
     capStream.getTracks().forEach((t) => t.stop());
     await makePlayer(v.id, { force: true }); // back to the normal player
     renderBreakdown();
-    toast(failed ? `Photos saved ✔ – ${failed} step(s) stayed black, try “Redo all photos”` : "Step photos saved ✔ – tap any photo to see it big", 6000);
+    toast(failed ? `Photos saved ✔ – ${failed} step(s) skipped (bad timestamp or video wouldn't play) – they keep a ▶ button to watch instead` : "Step photos saved ✔ – tap any photo to see it big", 6000);
    } finally {
     document.querySelector(".player-wrap.capturing")?.classList.remove("capturing");
     document.querySelectorAll(".cap-label, .shield").forEach((n) => n.remove());

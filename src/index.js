@@ -436,7 +436,7 @@ async function breakdown(env, { videoId, car, problem, length = "", deep = true 
     try {
       result = await videoLlm(
         env,
-        `You are a master mechanic turning a repair video into a step-by-step guide.\n${STEPS_SCHEMA}\n\n${context}\nWatch this video and break it into steps with accurate timestamps.`,
+        `You are a master mechanic turning a repair video into a step-by-step guide.\n${STEPS_SCHEMA}\n\n${context}\n${length ? `The video is ${length} long – every timestamp must be inside that (no steps from the intro/outro/end screen).\n` : ""}Watch this video and break it into steps with accurate timestamps.`,
         `https://www.youtube.com/watch?v=${videoId}`
       );
       source = "watched the video";
@@ -461,7 +461,21 @@ async function breakdown(env, { videoId, car, problem, length = "", deep = true 
     source = source || "used description only (estimates)";
   }
 
+  // Drop steps the model placed past the end of the video (they'd show the end screen).
+  const dur = parseLength(length) || meta.lengthSeconds;
+  if (dur && Array.isArray(result.steps)) {
+    result.steps = result.steps
+      .map((st) => ({ ...st, t: Math.max(0, Math.round(Number(st.t) || 0)) }))
+      .filter((st) => st.t < dur - 3)
+      .sort((a, b) => a.t - b.t);
+  }
   return { ...result, source, meta };
+}
+
+function parseLength(str = "") {
+  const parts = String(str).split(":").map(Number);
+  if (!parts.length || parts.some(isNaN)) return 0;
+  return parts.reduce((acc, n) => acc * 60 + n, 0);
 }
 
 async function videoMeta(videoId) {
