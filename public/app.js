@@ -514,7 +514,7 @@ function renderBreakdown() {
   if (!active()) state.active = ids[ids.length - 1];
   const { video: v, data: b } = active();
   const canCapture = !!navigator.mediaDevices?.getDisplayMedia && !/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
-  const haveAll = (b.steps || []).every((_, i) => photos[shotKey(v.id, i)]);
+  const haveAll = (b.steps || []).every((s, i) => photos[shotKey(v.id, i)] || s.miss);
   const list = (title, arr) => (arr?.length ? `<div><b>${title}</b><ul>${arr.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : "");
   const extras = (b.tools?.length || 0) + (b.parts?.length || 0) + (b.specs?.length || 0);
   const nPhotos = (b.steps || []).filter((_, i) => photos[shotKey(v.id, i)]).length;
@@ -527,7 +527,7 @@ function renderBreakdown() {
     <div><h3>${esc(v.title)}</h3><div class="muted">${esc(b.overview)} (${esc(b.source)})</div></div>
     ${canCapture && !haveAll ? `
       <div class="banner">
-        <div><b>📸 This video has no step photos yet</b><br><span class="muted">Click, then pick <b>this tab</b> in the popup and hit Share. It jumps through the video and snaps each step (~1 min). Keep this tab open.</span></div>
+        <div><b>📸 This video has no step photos yet</b><br><span class="muted">Click, then pick <b>this tab</b> in the popup and hit Share. It jumps through the video and picks the clearest shot of each step (a few minutes). Keep this tab open.</span></div>
         <button class="primary" id="captureAll">Make step photos</button>
       </div>` : ""}
     ${!canCapture ? `<p class="muted">On a phone: tap any step picture to play that exact moment. For real screenshots, open this on a computer once.</p>` : ""}
@@ -599,7 +599,7 @@ function boxHtml(box) {
 function shotHtml(vid, s, i, img = photos[shotKey(vid, i)]) {
   if (img) return `<img src="${img}" alt="" />${boxHtml(s.box)}`;
   const desktop = !/Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
-  return `<img src="https://i.ytimg.com/vi/${vid}/hqdefault.jpg" alt="" class="dim" /><span class="play">${desktop ? "📸 No photo yet · " : "▶ "}${fmtTime(s.t)}</span>`;
+  return `<img src="https://i.ytimg.com/vi/${vid}/hqdefault.jpg" alt="" class="dim" /><span class="play">${s.miss ? "▶ Not clear in a photo – watch " : desktop ? "📸 No photo yet · " : "▶ "}${fmtTime(s.t)}</span>`;
 }
 
 // Plays from just before the frame and keeps going (pause/scrub with YouTube's own controls).
@@ -964,45 +964,135 @@ function isBlank(c) {
   return sum / (d.length / 4) < 18 || bright < 20;
 }
 
-// Jump to t, let it actually play, then grab a non-black frame. Returns dataURL or null.
-// The video keeps playing the whole time and we only jump around in it – pausing/resuming is what
-// makes YouTube flash its play/pause icons. We only take the photo once the video is really playing
-// (time moving forward, not ended/buffering) and any icon has had time to fade.
+// ---- careful step photos ----
+// A single frame grabbed at the model's timestamp is often the wrong one to work from: blurred by
+// motion, a hand over the bolt, or a second late. So for every step we
+//   1. watch ~6 seconds around the timestamp and grab a frame every 0.75s (the video keeps playing –
+//      pausing/resuming makes YouTube flash its icons – and we jump back after any wait so the
+//      frames are on time),
+//   2. score them here for sharpness and stillness and keep the best from before, at and after
+//      the timestamp,
+//   3. let the vision model pick the one that really shows the part and box it on that exact photo.
+// One slow, careful look and one check per step – never a second round. If the part isn't visible
+// in any of them the step gets no photo (it keeps its ▶ button) rather than a misleading one.
 let lastMouseMove = 0;
 const MOUSE_QUIET_MS = 3000; // YouTube hides its hover controls after the mouse rests
+const LOOK = [-3, -2.25, -1.5, -0.75, 0, 0.75, 1.5, 2.25, 3]; // seconds around the step's timestamp
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function captureAt(t, label) {
-  const dur = player.getDuration?.() || 0;
-  if (dur && t >= dur - 2) return { skip: "past the end of the video" };
-  player.seekTo(Math.max(0, t - 1.5), true);
-  const deadline = Date.now() + 15000; // give up on this step after 15s
-  let first = true;
-  while (Date.now() < deadline) {
-    const st = player.getPlayerState();
-    if (st === YT.PlayerState.ENDED) return { skip: "video ended" };
-    if (st !== YT.PlayerState.PLAYING && st !== YT.PlayerState.BUFFERING) player.playVideo();
-    while (player.getCurrentTime() < t && Date.now() < deadline) await sleep(80);
-    await sleep(first ? 1200 : 500);
-    first = false;
-    // only shoot when the video is really playing (time moving), so no play/pause/loading icons
-    const a = player.getCurrentTime();
-    await sleep(250);
-    if (!(player.getCurrentTime() > a && player.getPlayerState() === YT.PlayerState.PLAYING)) continue;
-    // wait out any recent mouse movement so no ⏸ / controls are on screen
-    if (Date.now() - lastMouseMove < MOUSE_QUIET_MS) {
-      const was = label?.textContent;
-      if (label) label.textContent = "🖱️ Keep your mouse still for a moment…";
-      while (Date.now() - lastMouseMove < MOUSE_QUIET_MS && Date.now() < deadline) await sleep(100);
-      if (label) label.textContent = was;
-      continue; // re-check that it's still playing at the right spot
-    }
-    const c = grabPlayerFrame();
-    if (!isBlank(c)) return { img: c.toDataURL("image/jpeg", 0.9) };
+// Small grayscale copy of a frame, for scoring.
+const GW = 320, GH = 180;
+function gray(c) {
+  const t = document.createElement("canvas");
+  t.width = GW; t.height = GH;
+  const x = t.getContext("2d", { willReadFrequently: true });
+  x.drawImage(c, 0, 0, GW, GH);
+  const d = x.getImageData(0, 0, GW, GH).data;
+  const g = new Float32Array(GW * GH);
+  for (let i = 0; i < g.length; i++) g[i] = 0.3 * d[i * 4] + 0.59 * d[i * 4 + 1] + 0.11 * d[i * 4 + 2];
+  return g;
+}
+// How much fine detail the frame has (variance of the Laplacian): low = blurry.
+function sharpness(g) {
+  let sum = 0, sq = 0, n = 0;
+  for (let y = 1; y < GH - 1; y++) for (let x = 1; x < GW - 1; x++) {
+    const i = y * GW + x;
+    const l = 4 * g[i] - g[i - 1] - g[i + 1] - g[i - GW] - g[i + GW];
+    sum += l; sq += l * l; n++;
   }
-  return { skip: "couldn't get a clear frame" };
+  return sq / n - (sum / n) ** 2;
+}
+// How much the picture changed between two grabs: high = camera/hands moving, or a cut.
+function motion(a, b) {
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d += Math.abs(a[i] - b[i]);
+  return d / a.length;
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const mouseQuiet = () => Date.now() - lastMouseMove >= MOUSE_QUIET_MS;
+
+// After a jump: wait until the video has really been playing for a second (time moving, no
+// loading/play icons left). False = the mouse moved (controls may be showing) or it never settled,
+// and the caller must jump back and try again.
+async function settle(deadline, label) {
+  let since = 0;
+  while (Date.now() < deadline) {
+    if (!mouseQuiet()) {
+      const was = label?.textContent;
+      if (label) label.textContent = "🖱️ Keep your mouse still for a moment…";
+      while (!mouseQuiet() && Date.now() < deadline) await sleep(100);
+      if (label) label.textContent = was;
+      return false;
+    }
+    const st = player.getPlayerState();
+    if (st !== YT.PlayerState.PLAYING) {
+      if (st !== YT.PlayerState.BUFFERING) player.playVideo();
+      since = 0;
+      await sleep(100);
+      continue;
+    }
+    const a = player.getCurrentTime();
+    await sleep(200);
+    if (player.getCurrentTime() > a) {
+      since ||= Date.now() - 200;
+      if (Date.now() - since >= 1000) return true;
+    } else since = 0;
+  }
+  return false;
+}
+
+// Grab one frame at each of t+offsets. Returns [{at, c (canvas), sharp, motion}], possibly empty.
+async function burst(t, offsets, label) {
+  const dur = player.getDuration?.() || 0;
+  const targets = [...new Set(offsets.map((o) => Math.max(0.3, t + o)))].filter((x) => !dur || x < dur - 2).sort((a, b) => a - b);
+  const shots = [];
+  if (!targets.length) return shots;
+  const deadline = Date.now() + 15000 + (targets[targets.length - 1] - targets[0]) * 1000;
+  const steady = () => player.getPlayerState() === YT.PlayerState.PLAYING && mouseQuiet();
+  let k = 0;
+  while (k < targets.length && Date.now() < deadline) {
+    player.seekTo(Math.max(0, targets[k] - 1.5), true); // a little early: the jump needs a moment to settle
+    if (!(await settle(deadline, label))) continue;
+    for (; k < targets.length && Date.now() < deadline; k++) {
+      while (player.getCurrentTime() < targets[k] && steady() && Date.now() < deadline) await sleep(40);
+      if (!steady()) break; // stalled or mouse moved: jump back for this frame
+      const before = gray(grabPlayerFrame());
+      await sleep(120);
+      const c = grabPlayerFrame();
+      const at = player.getCurrentTime();
+      if (!steady()) break;
+      if (isBlank(c)) continue;
+      const g = gray(c);
+      shots.push({ at, c, sharp: sharpness(g), motion: motion(before, g) });
+    }
+  }
+  return shots;
+}
+
+// Up to four candidates in time order: the best frame before the moment, the two best at it, the best after.
+function bestShots(shots, t) {
+  const top = Math.max(...shots.map((s) => s.sharp)) || 1;
+  shots.forEach((s) => (s.score = s.sharp / top - 0.6 * Math.min(1, s.motion / 20) - 0.04 * Math.abs(s.at - t)));
+  const best = (lo, hi, n) => shots.filter((s) => s.at - t >= lo && s.at - t < hi).sort((a, b) => b.score - a.score).slice(0, n);
+  return [...best(-Infinity, -1.1, 1), ...best(-1.1, 1.3, 2), ...best(1.3, Infinity, 1)].sort((a, b) => a.at - b.at).map((s) => {
+    const sm = document.createElement("canvas"); // small copy for the AI check
+    sm.width = Math.min(768, s.c.width);
+    sm.height = Math.round((sm.width * s.c.height) / s.c.width);
+    sm.getContext("2d").drawImage(s.c, 0, 0, sm.width, sm.height);
+    return { at: s.at, score: s.score, full: s.c.toDataURL("image/jpeg", 0.9), small: sm.toDataURL("image/jpeg", 0.7) };
+  });
+}
+
+// Ask the vision model which candidate shows the step's part. null = the check itself failed.
+async function pickFrame(step, top) {
+  try {
+    return await api("/api/pickframe", {
+      car: state.car, problem: state.problem,
+      step: { title: step.title, detail: step.detail, look_at: step.look_at },
+      frames: top.map((s) => s.small),
+    }, { timeout: 45000 });
+  } catch { return null; }
+}
 
 async function captureAll(btn) {
   if (!playerReady) return toast("Player still loading…");
@@ -1012,7 +1102,6 @@ async function captureAll(btn) {
    try {
     await ensureCapture();
     const steps = b.steps || [];
-    let failed = 0;
     // fill the screen with the video: bigger player = YouTube sends HD = sharper photos
     const wrap = $(".player-wrap");
     wrap.classList.add("capturing");
@@ -1020,6 +1109,7 @@ async function captureAll(btn) {
     label.className = "cap-label";
     label.textContent = "📸 Getting the video ready… keep your mouse still";
     wrap.appendChild(label);
+    const say = (msg) => (btn.innerHTML = label.textContent = msg + " · keep your mouse still");
     // Cover the whole screen BEFORE the player loads, so YouTube never sees the mouse
     // (a hovered player shows its ⏸ button). Mouse moves are tracked so we can wait them out.
     const shield = document.createElement("div");
@@ -1033,21 +1123,48 @@ async function captureAll(btn) {
     player.seekTo(Math.max(0, (steps[0]?.t || 0) - 1.5), true);
     player.playVideo();
     await waitPlaying(10000);
+
+    // Look at every step; its AI check runs in the background while we move on to the next.
+    const jobs = [];
     for (let i = 0; i < steps.length; i++) {
-      btn.innerHTML = label.textContent = `📸 Taking step photos… ${i + 1}/${steps.length} · keep your mouse still`;
-      const r = await captureAt(steps[i].t, label);
-      if (r.img) await photoPut(shotKey(v.id, i), r.img);
-      else { failed++; if (photos[shotKey(v.id, i)]) await photoDel(shotKey(v.id, i)); } // drop a bad old photo
-      const n = document.querySelector(`#step-${i} .shot`);
-      if (n) n.innerHTML = shotHtml(v.id, steps[i], i);
+      say(`📸 Taking step photos… ${i + 1}/${steps.length}`);
+      const shots = await burst(steps[i].t, LOOK, label);
+      if (!shots.length) continue;
+      const top = bestShots(shots, steps[i].t);
+      jobs[i] = { top, pick: pickFrame(steps[i], top) };
     }
+
+    // Keep the frame the AI chose for each step.
+    let made = 0, unclear = 0, failed = 0, unchecked = 0;
+    for (let i = 0; i < steps.length; i++) {
+      const s = steps[i], key = shotKey(v.id, i);
+      delete s.miss;
+      let img = null;
+      if (jobs[i]) {
+        say(`🔎 Checking each photo shows the right part… ${i + 1}/${steps.length}`);
+        const { top } = jobs[i];
+        const r = await jobs[i].pick;
+        if (!r) { img = [...top].sort((a, b) => b.score - a.score)[0].full; unchecked++; } // check unavailable: sharpest frame, original box
+        else if (r.best) { img = top[r.best - 1].full; s.box = r.box; }
+        else { s.miss = true; unclear++; }
+      } else failed++;
+      if (img) { await photoPut(key, img); made++; }
+      else if (photos[key]) await photoDel(key); // drop a bad old photo
+    }
+    save();
+
     shield.remove();
     label.remove();
     wrap.classList.remove("capturing");
     capStream.getTracks().forEach((t) => t.stop());
     await makePlayer(v.id, { force: true }); // back to the normal player
     renderBreakdown();
-    toast(failed ? `Photos saved ✔ – ${failed} step(s) skipped (bad timestamp or video wouldn't play) – they keep a ▶ button to watch instead` : "Step photos saved ✔ – tap any photo to see it big", 6000);
+    const notes = [
+      unclear && `${unclear} step(s) had no clear view of the part, so they keep a ▶ button instead of a wrong photo`,
+      failed && `${failed} step(s) skipped (bad timestamp or video wouldn't play)`,
+      unchecked && `${unchecked} couldn't be double-checked`,
+    ].filter(Boolean);
+    toast(`${made} step photos saved ✔${notes.length ? " – " + notes.join("; ") : " – tap any photo to see it big"}`, notes.length ? 9000 : 6000);
    } finally {
     document.querySelector(".player-wrap.capturing")?.classList.remove("capturing");
     document.querySelectorAll(".cap-label, .shield").forEach((n) => n.remove());
@@ -1073,6 +1190,7 @@ async function snapNow() {
     const c = grabPlayerFrame();
     if (isBlank(c)) return toast("That frame is black – let the video play a second and try again");
     await photoPut(shotKey(v.id, idx), c.toDataURL("image/jpeg", 0.9));
+    if (b.steps[idx]?.miss) { delete b.steps[idx].miss; save(); }
     renderBreakdown();
     toast(`Saved to step ${idx + 1}`);
   } catch (e) {

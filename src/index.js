@@ -3,6 +3,7 @@
 //   POST /api/diagnose   -> likely problems for a car + symptoms (chat style)
 //   POST /api/videos     -> ordered YouTube playlist for one problem
 //   POST /api/breakdown  -> timestamped repair steps for one video
+//   POST /api/pickframe  -> which of a few candidate screenshots best shows a step's part (+ box)
 //   POST /api/ask        -> free-form follow-up question
 //   GET  /api/config     -> whether a password is required / sync is on
 //   GET|PUT /api/sync, GET|PUT|DELETE /api/photo, POST /api/share  -> cloud sync (KV)
@@ -47,6 +48,8 @@ export default {
           return json(await findVideos(env, body));
         case "/api/breakdown":
           return json(await breakdown(env, body));
+        case "/api/pickframe":
+          return json(await pickFrame(env, body));
         case "/api/ask":
           return json(await ask(env, body));
         default:
@@ -496,6 +499,36 @@ async function breakdown(env, { videoId, car, problem, length = "", deep = true 
       .sort((a, b) => a.t - b.t);
   }
   return { ...result, source, meta };
+}
+
+/* ----------------------------- pick the best screenshot for a step ----------------------------- */
+
+// The browser grabs a few sharp frames around a step's timestamp; a vision model (PHOTO_MODEL) looks at them and
+// says which one actually shows the part (and where), or that none does – so a step never gets a
+// photo of the wrong moment, and the orange box is drawn on the photo the user really sees.
+async function pickFrame(env, { car, problem, step = {}, frames }) {
+  if (!Array.isArray(frames) || !frames.length || frames.length > 4) throw new Error("Send 1-4 frames");
+  if (frames.some((f) => typeof f !== "string" || !f.startsWith("data:image/jpeg;base64,") || f.length > 700000)) throw new Error("Bad frame");
+  const clip = (x, n) => String(x || "").slice(0, n);
+  const content = [
+    {
+      type: "text",
+      text: `You are a master mechanic choosing the photo for one step of a repair guide. The owner will look at this photo while working on the car, so it must clearly show the part they need to find.
+Vehicle: ${carString(car)}
+Repair: ${clip(problem?.name || problem, 200)}
+Step: ${clip(step.title, 200)} – ${clip(step.detail, 600)}
+The photo should show: ${clip(step.look_at, 600)}
+
+Below are ${frames.length} frames from the repair video, a moment apart. Pick the ONE where that part is easiest to see and find: in frame, in focus, well lit, not hidden by a hand or tool, not a title card, talking head or mid-transition blur.
+It must be that exact part, not a similar bolt or connector somewhere else on the engine. If it is not clearly visible in any frame, answer 0 – no photo is better than a misleading one.
+Return ONLY JSON: {"best": frame number (1-${frames.length}) or 0, "box": [ymin, xmin, ymax, xmax] of the part in the chosen frame, each 0-1000, or null, "why": "a few words"}`,
+    },
+  ];
+  frames.forEach((f, i) => content.push({ type: "text", text: `Frame ${i + 1}:` }, { type: "image_url", image_url: { url: f } }));
+  const r = await llmOnce(env, [{ role: "user", content }], { model: env.PHOTO_MODEL || env.VIDEO_MODEL, maxTokens: 1500 });
+  const best = Number.isInteger(r.best) && r.best >= 1 && r.best <= frames.length ? r.best : 0;
+  const box = best && Array.isArray(r.box) && r.box.length === 4 && r.box.every((n) => Number.isFinite(+n)) ? r.box.map((n) => Math.round(+n)) : null;
+  return { best, box, why: clip(r.why, 120) };
 }
 
 function parseLength(str = "") {

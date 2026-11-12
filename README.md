@@ -121,7 +121,7 @@ This is an AI helper, **not a mechanic**. It can be wrong about diagnoses, torqu
 ## For developers
 
 - **Stack:** one Cloudflare Worker (`src/index.js`) plus plain HTML/CSS/JS in `public/`. There's no build step.
-- **AI:** OpenRouter. `MODEL` (default `deepseek/deepseek-v4.1-flash`, falls back to `FALLBACK_MODEL` = Claude Haiku 5.5) handles diagnosis, video ordering and Q&A. `VIDEO_MODEL` (default `google/gemini-3.8-flash`) watches the YouTube videos. Change both in `wrangler.toml`.
+- **AI:** OpenRouter. `MODEL` (default `deepseek/deepseek-v4.1-flash`, falls back to `FALLBACK_MODEL` = Claude Haiku 5.5) handles diagnosis, video ordering and Q&A. `VIDEO_MODEL` (default `google/gemini-3.8-flash`) watches the YouTube videos. `PHOTO_MODEL` (default Claude Haiku 5.5) checks that each step photo really shows the part. Change them in `wrangler.toml`.
 - **Storage:** Workers KV (`STORE`, created automatically on deploy) for sync and share links. IndexedDB in the browser keeps a local copy of photos.
 - **Design:** the [Legible design system](https://github.com/ZPARXMarketing/Legible-DesignSystem) is copied into `public/legible/`. That includes its tokens, component CSS and the **Aa** reader panel (themes, text size, contrast).
 - **Run locally:** copy `.dev.vars.example` to `.dev.vars`, fill it in, then run `npm install` and `npm run dev`.

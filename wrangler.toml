@@ -19,6 +19,8 @@ MODEL = "deepseek/deepseek-v4.1-flash"
 FALLBACK_MODEL = "anthropic/claude-haiku-5.5"
 # Model that can watch YouTube videos directly (Gemini)
 VIDEO_MODEL = "google/gemini-3.8-flash"
+# Model that checks each step photo really shows the part (any model that reads images)
+PHOTO_MODEL = "anthropic/claude-haiku-5.5"
 
 # Secrets (set in Cloudflare dashboard or `npx wrangler secret put NAME`):
 #   OPENROUTER_API_KEY  - required
