@@ -1,6 +1,8 @@
 name = "car-repair-helper"
 main = "src/index.js"
 compatibility_date = "2025-10-01"
+# Keep variables added in the Cloudflare dashboard when redeploying from GitHub
+keep_vars = true
 
 [assets]
 directory = "./public"
